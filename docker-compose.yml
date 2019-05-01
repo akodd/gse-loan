@@ -1,25 +1,25 @@
 version: '3'
 services:
-  #jupyter-labn:
-  #  build: ./docker/jupyter
-  #  #image: tensorflow/tensorflow:latest-gpu-py3-jupyter
-  #  shm_size: '1gb'
-  #  #network_mode: "host"
-  #  ports:
-  #    - 6006:6006
-  #    - 6007:6007
-  #    - 9999:8888
-  #  volumes:
-  #    - ./:/home/user/notebooks
-  #    - ./data-csv:/opt/data
-  #  environment:
-  #    - NVIDIA_VISIBLE_DEVICES=all
-  #    - JUPYTER_ENABLE_LAB=yes
-  #  ulimits:
-  #    memlock:
-  #      soft: -1
-  #      hard: -1
-  #    stack: 67108864
+  jupyter-labn:
+    build: ./docker/jupyter
+    #image: tensorflow/tensorflow:latest-gpu-py3-jupyter
+    shm_size: '1gb'
+    #network_mode: "host"
+    ports:
+      - 6006:6006
+      - 6007:6007
+      - 9999:8888
+    volumes:
+      - ./:/home/user/notebooks
+      - ./data-csv:/opt/data
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - JUPYTER_ENABLE_LAB=yes
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      stack: 67108864
   vertica:
     #image: jbfavre/vertica:9.2.0-6_debian-8
     image: akodd/vertica:9.2.0-6_ubuntu-16.04
@@ -41,13 +41,13 @@ services:
     #    soft: 65536
     #    hard: 65536
     #command: "while true; do sleep 1; done;"
-  #rstudio:
-  #  #image: rocker/verse:3.5.3
-  #  build: ./docker/rstudio-verse-mod
-  #  ports:
-  #    - 8787:8787
-  #  volumes:
-  #    - ./:/home/rstudio
-  #    - ./data/data-csv:/opt/data
-  #  environment:
-  #    - PASSWORD=gse-loan
+  rstudio:
+    #image: rocker/verse:3.5.3
+    build: ./docker/rstudio-verse-mod
+    ports:
+      - 8787:8787
+    volumes:
+      - ./:/home/rstudio
+      - ./data/data-csv:/opt/data
+    environment:
+      - PASSWORD=gse-loan
