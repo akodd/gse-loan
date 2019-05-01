@@ -103,12 +103,16 @@ venv.bak/
 # mypy
 .mypy_cache/
 
-#VS Code
+# VS Code
 .vscode/
 
-#RStudio
+# RStudio
 .Rproj.user
 .Rhistory
 .RData
 .Rprofile
 .rstudio
+
+# Scratch SQL files
+scratch*.sql
+
