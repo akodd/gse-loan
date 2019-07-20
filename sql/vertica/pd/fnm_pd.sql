@@ -1,27 +1,29 @@
-
 drop table fnm_pd;
 create table fnm_pd as
+with 
+    default_period_iden as ( --defaulted loans only
+        select
+            loan_id,
+            min(rpt_period) as default_period
+        from fnm_pre_pd_2
+        where def_ind = 1 
+        group by loan_id
+    )
 select
-    p.loan_id,
-    p.rpt_period,
-    last_value(servicer_id ignore nulls) over (partition by p.loan_id order by rpt_period) as servicer_id,
-    case
-        when (case
-                when trim(del) = 'X' then 0
-                else cast(del as int)
-            end) >= 7 then 1
-        else 0
-    end as def_ind,
-    case
-        when trim(del) = 'X' then 0
-        else cast(del as int)
-    end as dlq,
-    p.age,
-    p.int_rate,
-    p.current_upb,
-    p.months_to_maturity,
-    p.msa,
-    p.modification_flag
-from fnm_prf p join fnm_acq a on p.loan_id = a.loan_id
-               left join fnm_servicer_name sv on p.servicer_name = sv.servicer_name
+    a.loan_id,
+    a.rpt_period,
+    a.servicer_id,
+    a.def_ind,
+    a.load_period_cnt,
+    b.default_period,
+    nvl(months_between(rpt_period, default_period), -9999) as default_dist,
+    a.dlq,
+    a.age,
+    a.int_rate,
+    a.current_upb,
+    a.months_to_maturity,
+    a.msa,
+    a.modification_flag
+from fnm_pre_pd_2 a left join default_period_iden b
+    on a.loan_id = b.loan_id
 ;
