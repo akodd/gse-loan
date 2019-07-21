@@ -1,13 +1,9 @@
 --    row_number() over (order by loan_id, rpt_period) as item_id,
-drop table fnm_input_ds;
-create table fnm_input_ds as
+drop table fnm_input_seq;
+create table fnm_input_seq as
 select
     a.loan_id,
     rpt_period,
-    row_number() over (
-        partition by train_valid_test_ind 
-        order by a.loan_id, a.rpt_period
-    ) as item_id,
     train_valid_test_ind,
     r,
     servicer_id,

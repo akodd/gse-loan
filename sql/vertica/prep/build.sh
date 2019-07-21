@@ -1,10 +1,11 @@
 #!/bin/bash
 
 sql_scripts=(
-    #fnm_collect_loans
-    #fnm_loan_split
-    fnm_encode_acq
-    #fnm_input_ds
+    fnm_collect_loans
+    fnm_loan_split
+    fnm_input_acq
+    fnm_input_seq
+    fnm_add_pkeys.sql
 )
 
 for sql_script in "${sql_scripts[@]}"

@@ -35,6 +35,12 @@ where loan_id in (
     -- training + prediction and removes left censored
     having max(load_period_cnt) >= 12 + 12 
 )
+and loan_id not in (
+    select
+        distinct loan_id
+    from fnm_pd
+    where dlq is null
+)
 ;
 
 

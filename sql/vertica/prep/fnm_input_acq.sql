@@ -1,11 +1,11 @@
-drop table fnm_encode_acq;
+drop table fnm_input_acq;
 -- We keep this table as is and cache it in memory
-create table fnm_encode_acq as
+create table fnm_input_acq as
 select
     c.loan_id,
     def_ind,
     r,
-    row_number() over (partition by train_valid_test_ind order by r) acc_item_id,
+    s.loan_item_id,
     train_valid_test_ind,
     a1.state_id,
     a2.purpose_id,
