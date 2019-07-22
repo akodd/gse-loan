@@ -1,4 +1,4 @@
-export to parquet (directory='/home/dbadmin/docker/fnm_input_seq_train_0')
+export to parquet (directory='/home/dbadmin/docker/fnm_input_seq_train_CHUNK')
 as
 select
     cast(loan_id as int) loan_id,
@@ -16,6 +16,8 @@ select
         else 0
     end modification_flag
 from fnm_input_seq
-where train_valid_test_ind = 0 and r < 0.08 -- 10% of training data
+where train_valid_test_ind = 0 
+    and LOWER_BOUNDARY <= r 
+    and r < UPPER_BOUNDARY -- 10% of training data
 order by loan_id, rpt_period
 ;

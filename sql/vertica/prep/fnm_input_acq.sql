@@ -3,7 +3,6 @@ drop table fnm_input_acq;
 create table fnm_input_acq as
 select
     c.loan_id,
-    def_ind,
     r,
     s.loan_item_id,
     train_valid_test_ind,

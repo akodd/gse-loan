@@ -15,8 +15,8 @@ split_loans as (
         def_ind,
         r,
         case
-            when r <=0.8 then 0 -- training
-            when 0.8<r and r<=0.9 then 1-- validation
+            when r <0.8 then 0 -- training
+            when 0.8<=r and r<0.9 then 1-- validation
             else 2
         end train_valid_test_ind
     from collect_loans
