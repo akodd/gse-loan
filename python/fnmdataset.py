@@ -5,6 +5,7 @@ import pandas as pd
 from torch.utils.data import *
 import numpy as np
 from os import path
+import glob
 
 conn_info = {
     'host': 'vertica',
@@ -77,20 +78,28 @@ class FNMRandomBatchSampler(BatchSampler):
 
 class FNMDataset(Dataset):
 
-    def __init__(self, acq_path, seq_paths,  number_of_loans = 1000):
-        self.fnm_encode_acq = pd.read_feather(acq_path)\
-            .set_index('loan_id')
-        self.length = len(self.fnm_encode_acq.index)
-        self.seq_paths = seq_paths
-        print("Number of loans: {}".format(self.length))
-        for _, seq_path in enumerate(seq_paths):
-            if not path.exists(seq_path):
-                raise ValueError("Cannot find feather file.", "Path: {}".format(seq_path))
+    def __init__(self, acq_path, seq_path,  number_of_loans = 1000):
+        # load acq files
+        self.acq = pd.read_feather(acq_path).set_index('loan_id')
+        self.length = len(self.acq.index)
+        # load seq files
+        self.seq_path = seq_path
+        files = [f for f in glob.glob(seq_path, recursive=False)]
+        if len(files)<=0:
+            raise ValueError('Cannot find seq files', "Path: {}".format(seq_path))
+        self.seq_fnames = { int(files[i].split('/')[-1].split('.')[0].split('_')[-1]):files[i] for i in range(len(files))}
+        self.seq_feathers = { idx: pd.read_feather(fname).set_index(['loan_id']) \
+            for idx, fname in self.seq_fnames.items()}
 
-    def getIDs(self, seq_path_idx):
-        self.fnm_input_seq = pd.read_feather(self.seq_paths[seq_path_idx])
-        self.loan_ids = self.fnm_input_seq.loan_id.unique()
-        return self.loan_ids
+        # TODO: create mapping between r and seq feather file
+        # override the number of loans for now
+        self.length = len(self.seq_feathers[0].index.unique())
+        self.acq = self.acq[self.acq.r < 0.08]
+
+    #def getIDs(self, seq_path_idx):
+    #    self.fnm_input_seq = pd.read_feather(self.seq_paths[seq_path_idx])
+    #    self.loan_ids = self.fnm_input_seq.loan_id.unique()
+    #    return self.loan_ids
 
     def __len__(self):
         #return self.length
@@ -102,12 +111,9 @@ class FNMDataset(Dataset):
         # extract row from acq by loan_id
         # extract from self.fnm_input_seq by loan_id ordered by rptperiod
         # merge them
+        # TODO: extend to many seq feather files
 
         loan_id = self.fnm_encode_acq.loc[idx, :]
-        cur = self.connection.cursor()
-        cur.execute(select_seq_sql.format(loan_id))
-        res = cur.fetchall()
-        res_pd = pd.DataFrame(res, columns=seq_col_name).astype({'loan_id':'int64'})
         loan_pd = pd.DataFrame(data=[self.fnm_encode_acq.loc[idx, :].values], \
             columns=self.fnm_encode_acq.columns)
         res_pd = res_pd.merge(loan_pd)
@@ -122,8 +128,8 @@ class FNMDataset(Dataset):
 if __name__ == "__main__":
     import os
     print(os.getcwd())
-
-    a = FNMDataset('notebooks/data/fnm_encode_acq_train.feather', 0)
+    fnm_input_acq_train = pd.read_parquet()
+    a = FNMDataset('/home/user/notebooks/data/fnm_input_acq_train')
     print(a.__len__())
     b, _ = a.__getitem__(64653)
     print(b)
