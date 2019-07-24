@@ -2,7 +2,7 @@ export to parquet (directory='/home/dbadmin/docker/fnm_input_seq_train_CHUNK')
 as
 select
     cast(loan_id as int) loan_id,
-    rpt_period,
+    cast(year(rpt_period)*100+month(rpt_period) as int) as yyyymm,
     cast(nvl(servicer_id, 0) as int) servicer_id,
     cast(default_1y as int) default_1y,
     cast(dlq as int) dlq,

@@ -15,6 +15,7 @@ print('Reading file: ' +parquet_file)
 
 fnm_input_seq_chunk = pd.read_parquet(parquet_file)
 fnm_input_seq_chunk = fnm_input_seq_chunk.astype({
+    'yyyymm': 'int32',
     'servicer_id': 'int8',
     'default_1y': 'uint8',
     'dlq': 'uint8',
