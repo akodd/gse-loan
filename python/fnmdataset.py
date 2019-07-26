@@ -113,34 +113,29 @@ class FNMDataset(Dataset):
         # merge them
         # TODO: extend to many seq feather files
 
-        loan_id = self.fnm_encode_acq.loc[idx, :]
-        loan_pd = pd.DataFrame(data=[self.fnm_encode_acq.loc[idx, :].values], \
-            columns=self.fnm_encode_acq.columns)
-        res_pd = res_pd.merge(loan_pd)
+        account = self.acq.iloc[[idx], :]
+        sequence = self.seq_feathers[0].loc[account.index[0], :]
 
-        
-        # extracting default indicator
-        
-        # extracting sequence 
 
-        return res_pd, res_pd.default_1y
+        return sequence[['servicer_id', 'dlq', 'age', 'int_rate', 'current_upb', 'msa']], \
+                account, np.array(sequence.default_1y)
         
 if __name__ == "__main__":
     import os
     print(os.getcwd())
-    fnm_input_acq_train = pd.read_parquet()
-    a = FNMDataset('/home/user/notebooks/data/fnm_input_acq_train')
+    a = FNMDataset(\
+        acq_path = '/home/user/notebooks/data/fnm_input_acq_train.feather',
+        seq_path = '/home/user/notebooks/data/fnm_input_seq_train_0.feather'
+    )
     print(a.__len__())
-    b, _ = a.__getitem__(64653)
-    print(b)
-    b = a.__getitem__(64654)
-    print(b)
-    b = a.__getitem__(64655)
-    print(b)
+    seq, acq, default_1y = a.__getitem__(64653)
+    seq, acq, default_1y = a.__getitem__(64654)
+    seq, acq, default_1y = a.__getitem__(64655)
 
     import time
     start = time.time()
-    for idx in range(1, 10000):
-        b, _ = a.__getitem__(idx)
+    for idx in range(1, 100):
+        seq, acq, default_1y = a.__getitem__(idx)
     end = time.time()
-    print('Time {} seconds'.format(end-start))
+    print("Time {:,} seconds".format(end-start))
+    print('Time per item {} seconds'.format((end-start)/100.0))
