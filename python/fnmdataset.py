@@ -6,6 +6,7 @@ from torch.utils.data import *
 import numpy as np
 from os import path
 import glob
+from torch.nn.utils.rnn import *
 
 conn_info = {
     'host': 'vertica',
@@ -115,22 +116,46 @@ class FNMDataset(Dataset):
 
         account = self.acq.iloc[[idx], :]
         sequence = self.seq_feathers[0].loc[account.index[0], :]
+        sequence = sequence.sort_values('yyyymm')\
+            .fillna(method='bfill').fillna(method='ffill')
 
-
-        return sequence[['servicer_id', 'dlq', 'age', 'int_rate', 'current_upb', 'msa']], \
-                account, np.array(sequence.default_1y)
+        return \
+            sequence[['dlq', 'age', 'int_rate', 'current_upb']].to_numpy(), \
+            account[['state_id', 'purpose_id', 'mi_type_id', \
+                'occupancy_status_id', 'product_type_id', 'property_type_id', \
+                    'seller_id', 'zip3_id']].fillna(0).to_numpy(), \
+            np.array(sequence.default_1y)
         
 if __name__ == "__main__":
     import os
     print(os.getcwd())
-    a = FNMDataset(\
+    train_ds = FNMDataset(\
         acq_path = '/home/user/notebooks/data/fnm_input_acq_train.feather',
         seq_path = '/home/user/notebooks/data/fnm_input_seq_train_0.feather'
     )
-    print(a.__len__())
-    seq, acq, default_1y = a.__getitem__(64653)
-    seq, acq, default_1y = a.__getitem__(64654)
-    seq, acq, default_1y = a.__getitem__(64655)
+    print(len(train_ds))
+    seq, acq, default_1y = train_ds.__getitem__(64653)
+    seq, acq, default_1y = train_ds.__getitem__(64654)
+    seq, acq, default_1y = train_ds.__getitem__(64655)
+
+    def my_pad_sequence(batch):
+        seq_batch = [torch.from_numpy(batch[i][0]) for i in range(len(batch))]
+        seq_batch = pad_sequence(seq_batch, batch_first=True)
+
+        acq_batch = [torch.from_numpy(batch[i][1]) for i in range(len(batch))]
+        acq_batch = torch.stack(acq_batch)
+
+        default_1y_batch = [torch.from_numpy(batch[i][2]) for i in range(len(batch))]
+        default_1y_batch = pad_sequence(default_1y_batch, batch_first=True)
+        return seq_batch, acq_batch, default_1y_batch
+
+    dataLoader = DataLoader(train_ds, batch_size=7,
+        collate_fn=my_pad_sequence)
+    for batch_idx, (sequence, account, default_1y) in enumerate(dataLoader):
+        print('batch_idx: {}'.format(batch_idx))
+        print('sequence shape: {}'.format(sequence.shape))
+        print('account shape: {}'.format(account.shape))
+        print('default_1y shape: {}'.format(default_1y.shape))
 
     import time
     start = time.time()
