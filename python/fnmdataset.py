@@ -125,42 +125,54 @@ class FNMDataset(Dataset):
                 'occupancy_status_id', 'product_type_id', 'property_type_id', \
                     'seller_id', 'zip3_id']].fillna(0).to_numpy(), \
             np.array(sequence.default_1y)
-        
+
+def paddingCollator(batch):
+    seq_batch = [torch.from_numpy(batch[i][0]) for i in range(len(batch))]
+    seq_batch = pad_sequence(seq_batch, batch_first=True)
+
+    acq_batch = [torch.from_numpy(batch[i][1]) for i in range(len(batch))]
+    acq_batch = torch.stack(acq_batch)
+
+    default_1y_batch = [torch.from_numpy(batch[i][2]) for i in range(len(batch))]
+    default_1y_batch = pad_sequence(default_1y_batch, batch_first=True)
+    return seq_batch, acq_batch, default_1y_batch
+
+ #class BaselM1Model()
+
 if __name__ == "__main__":
     import os
-    print(os.getcwd())
+    print('Working directory: {}'.format(os.getcwd()))
     train_ds = FNMDataset(\
         acq_path = '/home/user/notebooks/data/fnm_input_acq_train.feather',
         seq_path = '/home/user/notebooks/data/fnm_input_seq_train_0.feather'
     )
-    print(len(train_ds))
-    seq, acq, default_1y = train_ds.__getitem__(64653)
-    seq, acq, default_1y = train_ds.__getitem__(64654)
-    seq, acq, default_1y = train_ds.__getitem__(64655)
+    print("Number of train seq: {:,}".format(len(train_ds)))
+    #seq, acq, default_1y = train_ds.__getitem__(64653)
 
-    def my_pad_sequence(batch):
-        seq_batch = [torch.from_numpy(batch[i][0]) for i in range(len(batch))]
-        seq_batch = pad_sequence(seq_batch, batch_first=True)
+    BATCH_SIZE = 50
+    NUM_WORKERS = 20
+    BATCH_STOP = 100
 
-        acq_batch = [torch.from_numpy(batch[i][1]) for i in range(len(batch))]
-        acq_batch = torch.stack(acq_batch)
-
-        default_1y_batch = [torch.from_numpy(batch[i][2]) for i in range(len(batch))]
-        default_1y_batch = pad_sequence(default_1y_batch, batch_first=True)
-        return seq_batch, acq_batch, default_1y_batch
-
-    dataLoader = DataLoader(train_ds, batch_size=7,
-        collate_fn=my_pad_sequence)
+    dataLoader = DataLoader(train_ds, batch_size=BATCH_SIZE,
+        collate_fn=paddingCollator, num_workers=NUM_WORKERS)
+    import time
+    start = time.time()
     for batch_idx, (sequence, account, default_1y) in enumerate(dataLoader):
         print('batch_idx: {}'.format(batch_idx))
         print('sequence shape: {}'.format(sequence.shape))
         print('account shape: {}'.format(account.shape))
         print('default_1y shape: {}'.format(default_1y.shape))
+        if batch_idx >= BATCH_STOP-1:
+            break
 
-    import time
-    start = time.time()
-    for idx in range(1, 100):
-        seq, acq, default_1y = a.__getitem__(idx)
     end = time.time()
     print("Time {:,} seconds".format(end-start))
-    print('Time per item {} seconds'.format((end-start)/100.0))
+    print('Time per seq {} seconds'.format(1.0*(end-start)/BATCH_SIZE/BATCH_STOP))
+
+    #import time
+    #start = time.time()
+    #for idx in range(1, 100):
+    #    seq, acq, default_1y = a.__getitem__(idx)
+    #end = time.time()
+    #print("Time {:,} seconds".format(end-start))
+    #print('Time per item {} seconds'.format((end-start)/100.0))
