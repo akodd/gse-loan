@@ -1,4 +1,4 @@
-export to parquet (directory='/home/dbadmin/docker/fnm_input_acq_train')
+export to parquet (directory='/home/dbadmin/docker/fnm_input_acq_parquet')
 as
 select
     cast (loan_id                      as int)  as loan_id             , 
@@ -13,6 +13,5 @@ select
     cast (nvl(seller_id, 0)            as int)  as seller_id           , 
     cast (nvl(zip3_id, 0)              as int)  as zip3_id             
 from fnm_input_acq
-where train_valid_test_ind = 0 
-order by loan_id
+where train_valid_test_ind = TVT_SLICE
 ;
