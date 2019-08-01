@@ -3,12 +3,14 @@ FROM nvcr.io/nvidia/tensorflow:19.03-py3
 RUN pip --no-cache-dir install \
 	jupyter \
 	jupyterlab \
+	ipywidgets \
 	statsmodels \
-	seaborn \
 	torch \
 	torchvision \
 	pyro-ppl \
+	seaborn \
 	jupyter_contrib_nbextensions \
+	feather-format \
 	vertica-python
 
 RUN jupyter contrib nbextension install 
