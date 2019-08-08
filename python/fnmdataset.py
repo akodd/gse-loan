@@ -1,178 +1,246 @@
 import torch as torch
 import torch.nn as nn
-import vertica_python
+import torch.optim as optim
 import pandas as pd
 from torch.utils.data import *
 import numpy as np
 from os import path
 import glob
 from torch.nn.utils.rnn import *
-
-conn_info = {
-    'host': 'vertica',
-    'port': 5433,
-    'user': 'dbadmin',
-    'session_label': 'fnm',
-    'unicode_error': 'strict',
-    'ssl': False,
-    'use_prepared_statements': True,
-    'connection_timeout': 120
-}
-
-select_seq_sql = """
-    select
-        loan_id,
-        rpt_period,
-        servicer_id,
-        default_1y,
-        dlq,
-        age,
-        int_rate,
-        current_upb,
-        months_to_maturity,
-        msa,
-        modification_flag
-    from fnm_input_ds
-    where loan_id = '{}'
-    order by rpt_period
-"""
-
-seq_col_name =  [
-    'loan_id',
-    'rpt_period',
-    'servicer_id',
-    'default_1y',
-    'dlq',
-    'age',
-    'int_rate',
-    'current_upb',
-    'months_to_maturity',
-    'msa',
-    'modification_flag'
-]
-
-class FNMRandomBatchSampler(BatchSampler):
-    r"""
-    
-    """
-
-    def __init__(self, data_source, files, batch_size):
-        self.data_source = data_source
-        self.mega_batch_number = len(files)
-        self.current_mega_batch = 0
-        self.batch_size = batch_size
-        
-    def __iter__(self):
-       for mbatch_idx in range(self.mega_batch_number):
-           mbatch_ids = self.data_source.getIDs(mbatch_idx)
-           np.shuffle(mbatch_ids)
-           batch = []
-           for idx in mbatch_ids:
-               batch.append(idx)
-               if len(batch) == self.batch_size:
-                   yield batch
-                   batch = []
-            # always drop last for now
-
-    def __len__(self):
-        return len(self.data_source) // self.batch_size
+from baselM1model import *
+import tqdm
 
 class FNMDataset(Dataset):
 
-    def __init__(self, acq_path, seq_path,  number_of_loans = 1000):
-        # load acq files
-        self.acq = pd.read_feather(acq_path).set_index('loan_id')
-        self.length = len(self.acq.index)
-        # load seq files
-        self.seq_path = seq_path
-        files = [f for f in glob.glob(seq_path, recursive=False)]
-        if len(files)<=0:
-            raise ValueError('Cannot find seq files', "Path: {}".format(seq_path))
-        self.seq_fnames = { int(files[i].split('/')[-1].split('.')[0].split('_')[-1]):files[i] for i in range(len(files))}
-        self.seq_feathers = { idx: pd.read_feather(fname).set_index(['loan_id']) \
-            for idx, fname in self.seq_fnames.items()}
-
-        # TODO: create mapping between r and seq feather file
-        # override the number of loans for now
-        self.length = len(self.seq_feathers[0].index.unique())
-        self.acq = self.acq[self.acq.r < 0.08]
-
-    #def getIDs(self, seq_path_idx):
-    #    self.fnm_input_seq = pd.read_feather(self.seq_paths[seq_path_idx])
-    #    self.loan_ids = self.fnm_input_seq.loan_id.unique()
-    #    return self.loan_ids
+    def __init__(self, acq, idx_to_seq, seq, ratio = 0):
+        self.acq = acq
+        self.seq = seq
+        self.idx_to_seq = idx_to_seq
+        if ratio > 0:
+            defaulted = acq[:,0]==1
+            n_defaulted = np.sum(defaulted)
+            def_idx = np.random.choice(np.where(defaulted)[0], n_defaulted, False)
+            nondef_idx = np.random.choice(np.where(~defaulted)[0], int(n_defaulted*ratio) , False)
+            sub_idx = np.concatenate([def_idx, nondef_idx])
+            self.length = sub_idx.shape[0]
+            self.idx_reduction = sub_idx
+        else:
+            self.length = acq.shape[0]
+            self.idx_reduction = np.arange(self.length)
 
     def __len__(self):
-        #return self.length
         return self.length
+        #return 100
     
+    def __getitem__(self, itemID):
+        idx = self.idx_reduction[itemID]
+        account = self.acq[idx, :]
+        seq_info = self.idx_to_seq[idx, :]
+        chunk_num = seq_info[0]
+        seq_idx_begin = seq_info[1]
+        seq_idx_end = seq_info[2]
+        # sequence columns are:
+        # 'default_1y', 'yyyymm', 'dlq', 'age', 'int_rate', 'current_upb'
+        #sequence = self.seq[0][seq_idx_begin:seq_idx_end, :] #TODO change back
+        sequence = self.seq[chunk_num][seq_idx_begin:seq_idx_end, :]
+        default_1y = sequence[:, 0]
+        dlq = sequence[:, 2].astype(int)
+        dlq = np.eye(8, dtype=np.float32)[dlq] # dlq is between 0 and 7
+        sequence = np.concatenate([dlq, sequence[:, 3:]], axis=1)
 
-    def __getitem__(self, idx):
-        # self.loan_ids contains ids that are indexed by idx
-        # extract row from acq by loan_id
-        # extract from self.fnm_input_seq by loan_id ordered by rptperiod
-        # merge them
-        # TODO: extend to many seq feather files
-
-        account = self.acq.iloc[[idx], :]
-        sequence = self.seq_feathers[0].loc[account.index[0], :]
-        sequence = sequence.sort_values('yyyymm')\
-            .fillna(method='bfill').fillna(method='ffill')
-
-        return \
-            sequence[['dlq', 'age', 'int_rate', 'current_upb']].to_numpy(), \
-            account[['state_id', 'purpose_id', 'mi_type_id', \
-                'occupancy_status_id', 'product_type_id', 'property_type_id', \
-                    'seller_id', 'zip3_id']].fillna(0).to_numpy(), \
-            np.array(sequence.default_1y)
+        return sequence, account, default_1y
 
 def paddingCollator(batch):
     seq_batch = [torch.from_numpy(batch[i][0]) for i in range(len(batch))]
+
+    seq_lengths = [seq_batch[b].shape[0] for b in range(len(seq_batch))]
+    seq_lengths, seq_perm_idx = torch.Tensor(seq_lengths).int().sort(0, descending=True)
+
     seq_batch = pad_sequence(seq_batch, batch_first=True)
+    seq_batch = seq_batch[seq_perm_idx, :, :]
 
     acq_batch = [torch.from_numpy(batch[i][1]) for i in range(len(batch))]
     acq_batch = torch.stack(acq_batch)
+    acq_batch = acq_batch[seq_perm_idx, :]
 
     default_1y_batch = [torch.from_numpy(batch[i][2]) for i in range(len(batch))]
     default_1y_batch = pad_sequence(default_1y_batch, batch_first=True)
-    return seq_batch, acq_batch, default_1y_batch
+    default_1y_batch = default_1y_batch[seq_perm_idx, :]
 
- #class BaselM1Model()
+    return seq_batch, seq_lengths, acq_batch, default_1y_batch
+
+def load_data(data_path):
+    acquisition_nname = data_path + '/fnm_input_acq.npy'
+    sequence_nname = data_path + '/fnm_input_seq_*.npy' #TODO switch back to *
+    idx_to_seq_nname = data_path + '/fnm_input_idx_to_seq.npy'
+    
+    print('Acquisition numpy: {}'.format(acquisition_nname))
+    print('Sequence numpy: {}'.format(sequence_nname))
+    print('Index to Sequence Index numpy: {}'.format(idx_to_seq_nname))
+    
+    seq_files = sorted([f for f in glob.glob(sequence_nname, recursive=False)])
+    seq_numpy = [None] * len(seq_files)
+    
+    acq_numpy = np.load(acquisition_nname)
+    idx_to_seq = np.load(idx_to_seq_nname)
+    
+    for chunk_idx, seq_numpy_chunk in enumerate(seq_files):
+        print("loading file: {}".format(seq_numpy_chunk))
+        seq_numpy[chunk_idx] = np.load(seq_numpy_chunk)
+        
+    return acq_numpy, idx_to_seq, seq_numpy
+
+def weightedLoss(default_1y, default_1y_hat, seq_lengths):
+    weights = torch.zeros_like(default_1y_hat)
+    for b in range(default_1y.size(0)):
+        weights[b, :seq_lengths[b]] = 1.0
+
+    loss = nn.functional.binary_cross_entropy(\
+        default_1y_hat, \
+        default_1y,  weight=weights, \
+        reduction = 'sum' \
+    )
+    return loss
 
 if __name__ == "__main__":
-    import os
-    print('Working directory: {}'.format(os.getcwd()))
-    train_ds = FNMDataset(\
-        acq_path = '/home/user/notebooks/data/fnm_input_acq_train.feather',
-        seq_path = '/home/user/notebooks/data/fnm_input_seq_train_0.feather'
-    )
-    print("Number of train seq: {:,}".format(len(train_ds)))
-    #seq, acq, default_1y = train_ds.__getitem__(64653)
+    TRAIN_PATH = '/home/user/notebooks/data/train'
+    VALID_PATH = '/home/user/notebooks/data/valid'
+    MODEL_PATH = '/home/user/notebooks/data/model/baselm1'
+    MODEL_SAVED = MODEL_PATH + '/baselm1.pth'
 
-    BATCH_SIZE = 50
-    NUM_WORKERS = 20
+    train_acq_numpy, train_idx_to_seq, train_seq_numpy = load_data(TRAIN_PATH)
+    valid_acq_numpy, valid_idx_to_seq, valid_seq_numpy = load_data(VALID_PATH)
+    
+    train_ds = FNMDataset(train_acq_numpy, train_idx_to_seq, train_seq_numpy, 2)
+    valid_ds = FNMDataset(valid_acq_numpy, valid_idx_to_seq, valid_seq_numpy)
+
+    print("Number of train acq: {:,}".format(len(train_ds)))
+    print("Number of valid acq: {:,}".format(len(valid_ds)))
+    
+
+    BATCH_SIZE = 10000 # TODO: change back to 10000
+    NUM_WORKERS = 0 # change back to 10 TODO:
     BATCH_STOP = 100
+    NUM_EPOCHS = 100
+    LOSS_EVERY_N_BATCHES=5
+    SAVE_EVERY_N_BATCHES=100
 
-    dataLoader = DataLoader(train_ds, batch_size=BATCH_SIZE,
+    trainDL = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle = True, \
         collate_fn=paddingCollator, num_workers=NUM_WORKERS)
-    import time
-    start = time.time()
-    for batch_idx, (sequence, account, default_1y) in enumerate(dataLoader):
-        print('batch_idx: {}'.format(batch_idx))
-        print('sequence shape: {}'.format(sequence.shape))
-        print('account shape: {}'.format(account.shape))
-        print('default_1y shape: {}'.format(default_1y.shape))
-        if batch_idx >= BATCH_STOP-1:
-            break
+    validDL = DataLoader(valid_ds, batch_size=BATCH_SIZE, shuffle = True, \
+        collate_fn=paddingCollator, num_workers=NUM_WORKERS)
 
-    end = time.time()
-    print("Time {:,} seconds".format(end-start))
-    print('Time per seq {} seconds'.format(1.0*(end-start)/BATCH_SIZE/BATCH_STOP))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #device = torch.device('cpu') #TODO: change back to cuda
 
-    #import time
-    #start = time.time()
-    #for idx in range(1, 100):
-    #    seq, acq, default_1y = a.__getitem__(idx)
-    #end = time.time()
-    #print("Time {:,} seconds".format(end-start))
-    #print('Time per item {} seconds'.format((end-start)/100.0))
+    model = BaselM1Model(11, 50, 5).to(device)
+    loss_function = nn.CrossEntropyLoss().to(device)
+    optimizer = optim.RMSprop(params=model.parameters())
+    checkpoint_epoch = 0
+    train_losses = []
+    valid_losses = []
+    train_preds = 0.0
+    valid_preds = 0.0
+
+    if path.exists(MODEL_SAVED):
+        print('Loading model checkpoint: {}'.format(MODEL_SAVED))
+        checkpoint = torch.load(MODEL_SAVED)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        checkpoint_epoch = checkpoint['epoch']
+        train_losses = checkpoint['train_losses']
+        train_preds = checkpoint['train_preds']
+        valid_losses = checkpoint['valid_losses']
+        valid_preds = checkpoint['valid_preds']
+
+    if torch.cuda.device_count() > 1:
+        print("Training on", torch.cuda.device_count(), "GPUs")
+        model = nn.DataParallel(model)
+
+    try:
+        with tqdm.trange(checkpoint_epoch, checkpoint_epoch + NUM_EPOCHS) as t:
+            for epoch in t:
+                t.set_description('Epoch: %i' % epoch)
+                model.train()
+                tqdm_inner = tqdm.tqdm(trainDL)
+                for bidx, (seq, seq_len, acq, def1y) in enumerate(tqdm_inner):
+                    tqdm_inner.set_description('Train: %i' % bidx)
+                    model.zero_grad()
+                    seq = seq.to(device)
+                    acq = acq.to(device)
+                    seq_len = seq_len.to(device)
+                    def1y = def1y.to(device)
+
+                    def1y_hat = model(seq, acq, seq_len, def1y)
+                    loss = weightedLoss(def1y, def1y_hat, seq_len)
+                    train_losses.append(loss.item())
+                    train_preds +=torch.sum(seq_len).item()
+                    loss.backward()
+                    optimizer.step()
+
+                    if bidx % LOSS_EVERY_N_BATCHES  == 0:
+                        tqdm_inner.set_postfix( \
+                            trainLoss = "{:.12f}".format(np.sum(train_losses)/train_preds), \
+                            train_preds=train_preds)
+
+                    if bidx % SAVE_EVERY_N_BATCHES == 0 and bidx > 0:
+                        torch.save({ \
+                            'epoch': epoch,
+                            'model_state_dict': model.module.state_dict(), \
+                            'optimizer_state_dict': optimizer.state_dict(), \
+                            'train_losses' : train_losses, \
+                            'valid_losses' : valid_losses, \
+                            'train_preds' : train_preds, \
+                            'valid_preds' : valid_preds \
+                            }, MODEL_SAVED \
+                        )
+
+                model.eval()
+                with torch.no_grad():
+                    tqdm_inner = tqdm.tqdm(validDL)
+                    for bidx, (seq, seq_len, acq, def1y) in enumerate(tqdm_inner):
+                        tqdm_inner.set_description('Valid: %i' % bidx)
+                        seq = seq.to(device)
+                        acq = acq.to(device)
+                        seq_len = seq_len.to(device)
+                        def1y = def1y.to(device)
+                        def1y_hat = model(seq, acq, seq_len, def1y)
+                        loss = weightedLoss(def1y, def1y_hat, seq_len)
+                        valid_losses.append(loss.item())
+                        valid_preds +=torch.sum(seq_len).item()
+
+                        if bidx % LOSS_EVERY_N_BATCHES  == 0:
+                            tqdm_inner.set_postfix( \
+                                validLoss = "{:.12f}".format(np.sum(valid_losses)/valid_preds), \
+                                valid_preds = valid_preds)
+
+                t.set_postfix(\
+                    trainLoss = "{:.12f}".format(np.sum(train_losses)/train_preds), \
+                    validLoss = "{:.12f}".format(np.sum(valid_losses)/valid_preds))
+
+                # save losses and model
+                torch.save({ \
+                    'epoch': epoch,
+                    'model_state_dict': model.module.state_dict(), \
+                    'optimizer_state_dict': optimizer.state_dict(), \
+                    'train_losses' : train_losses, \
+                    'valid_losses' : valid_losses, \
+                    'train_preds' : train_preds, \
+                    'valid_preds' : valid_preds \
+                    }, MODEL_SAVED \
+                )
+
+    except KeyboardInterrupt:
+        print ('Saving the model state before exiting')
+        torch.save({ \
+                    'epoch': epoch,
+                    'model_state_dict': model.module.state_dict(), \
+                    'optimizer_state_dict': optimizer.state_dict(), \
+                    'train_losses' : train_losses, \
+                    'valid_losses' : valid_losses, \
+                    'train_preds' : train_preds, \
+                    'valid_preds' : valid_preds \
+                    }, MODEL_SAVED \
+                )
+
+
