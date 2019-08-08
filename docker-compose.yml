@@ -32,8 +32,8 @@ services:
       - ./data-csv:/opt/data:ro
       - ./:/home/dbadmin/gse-loan:ro
   rstudio:
-    #image: rocker/verse:3.5.3
-    build: ./docker/rstudio-verse-mod
+    image: rocker/verse:3.6.1
+    #build: ./docker/rstudio-verse-mod
     ports:
       - 8787:8787
     volumes:
