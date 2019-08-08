@@ -3,9 +3,9 @@ drop table fnm_input_acq;
 create table fnm_input_acq as
 select
     c.loan_id,
-    r,
-    s.loan_item_id,
-    train_valid_test_ind,
+    s.acq_def_ind,
+    s.r,
+    s.train_valid_test_ind,
     a1.state_id,
     a2.purpose_id,
     a3.mi_type_id,

@@ -4,7 +4,7 @@ with
 collect_loans as (
     select
         loan_id,
-        max(def_ind) as def_ind,
+        max(def_ind) as acq_def_ind,
         random() r
     from fnm_collect_loans
     group by loan_id
@@ -12,7 +12,7 @@ collect_loans as (
 split_loans as (
     select
         loan_id,
-        def_ind,
+        acq_def_ind,
         r,
         case
             when r <0.8 then 0 -- training
@@ -23,8 +23,8 @@ split_loans as (
 )
 select
     loan_id,
+    acq_def_ind,
     r,
-    train_valid_test_ind,
-    row_number() over (partition by train_valid_test_ind order by r) loan_item_id
+    train_valid_test_ind
 from split_loans
 ;

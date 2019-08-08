@@ -1,9 +1,9 @@
 export to parquet (directory='/home/dbadmin/docker/fnm_input_acq_parquet')
 as
 select
-    cast (loan_id                      as int)  as loan_id             , 
+    cast (loan_id                      as int)  as loan_id             ,
+    cast (acq_def_ind                  as int)  as acq_def_ind         ,
     cast (r                            as float) as r                   , 
-    cast (nvl(loan_item_id, 0)         as int)  as loan_item_id        , 
     cast (nvl(state_id, 0)             as int)  as state_id            , 
     cast (nvl(purpose_id, 0)           as int)  as purpose_id          , 
     cast (nvl(mi_type_id, 0)           as int)  as mi_type_id          , 

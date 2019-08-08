@@ -1,10 +1,10 @@
 #!/bin/bash
 
 sql_scripts=(
-    #fnm_collect_loans
-    #fnm_loan_split
+    fnm_collect_loans
+    fnm_loan_split
     fnm_input_acq
-    #fnm_input_seq
+    fnm_input_seq
     #fnm_add_pkeys.sql
 )
 
