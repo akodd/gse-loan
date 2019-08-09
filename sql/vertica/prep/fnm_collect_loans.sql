@@ -13,7 +13,7 @@ select
     default_period,
     default_dist,
     case
-        when default_dist >= -11 then 1
+        when default_dist >= -12 then 1
         else 0
     end as default_1y,
     dlq,
