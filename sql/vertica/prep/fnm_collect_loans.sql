@@ -29,8 +29,6 @@ where loan_id in (
     select  
         loan_id
     from fnm_pd
-    -- remove accouts long in default
-    -- where default_dist <= 11 TODO: this file is junk
     group by loan_id
     -- training + prediction and removes left censored
     having max(load_period_cnt) >= 12 + 12 
