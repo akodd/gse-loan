@@ -43,6 +43,7 @@ class FNMDataset(Dataset):
         # 'default_1y', 'yyyymm', 'dlq', 'age', 'int_rate', 'current_upb'
         #sequence = self.seq[0][seq_idx_begin:seq_idx_end, :] #TODO change back
         sequence = self.seq[chunk_num][seq_idx_begin:seq_idx_end, :]
+        sequence = sequence[sequence[:,2] <= 7, :] # filter DLQ above 7
         default_1y = sequence[:, 0]
         dlq = sequence[:, 2].astype(int)
         dlq = np.eye(8, dtype=np.float32)[dlq] # dlq is between 0 and 7
@@ -98,7 +99,7 @@ def weightedLoss(default_1y, default_1y_hat, seq_lengths):
     loss = nn.functional.binary_cross_entropy(\
         default_1y_hat, \
         default_1y,  weight=weights, \
-        reduction = 'sum' \
+        reduction = 'mean' \
     )
     return loss
 
@@ -111,18 +112,18 @@ if __name__ == "__main__":
     train_acq_numpy, train_idx_to_seq, train_seq_numpy = load_data(TRAIN_PATH)
     valid_acq_numpy, valid_idx_to_seq, valid_seq_numpy = load_data(VALID_PATH)
     
-    train_ds = FNMDataset(train_acq_numpy, train_idx_to_seq, train_seq_numpy, 2)
+    train_ds = FNMDataset(train_acq_numpy, train_idx_to_seq, train_seq_numpy, 1.5)
     valid_ds = FNMDataset(valid_acq_numpy, valid_idx_to_seq, valid_seq_numpy)
 
     print("Number of train acq: {:,}".format(len(train_ds)))
     print("Number of valid acq: {:,}".format(len(valid_ds)))
     
 
-    BATCH_SIZE = 10000 # TODO: change back to 10000
-    NUM_WORKERS = 0 # change back to 10 TODO:
+    BATCH_SIZE = 8000 # TODO: change back to 10000
+    NUM_WORKERS = 5 # change back to 10 TODO:
     BATCH_STOP = 100
     NUM_EPOCHS = 100
-    LOSS_EVERY_N_BATCHES=5
+    LOSS_EVERY_N_BATCHES=10
     SAVE_EVERY_N_BATCHES=100
 
     trainDL = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle = True, \
@@ -160,6 +161,7 @@ if __name__ == "__main__":
     try:
         with tqdm.trange(checkpoint_epoch, checkpoint_epoch + NUM_EPOCHS) as t:
             for epoch in t:
+                train_losses_epoch = []
                 t.set_description('Epoch: %i' % epoch)
                 model.train()
                 tqdm_inner = tqdm.tqdm(trainDL)
@@ -173,14 +175,14 @@ if __name__ == "__main__":
 
                     def1y_hat = model(seq, acq, seq_len, def1y)
                     loss = weightedLoss(def1y, def1y_hat, seq_len)
-                    train_losses.append(loss.item())
+                    train_losses_epoch.append(loss.item())
                     train_preds +=torch.sum(seq_len).item()
                     loss.backward()
                     optimizer.step()
 
                     if bidx % LOSS_EVERY_N_BATCHES  == 0:
                         tqdm_inner.set_postfix( \
-                            trainLoss = "{:.12f}".format(np.sum(train_losses)/train_preds), \
+                            trainLoss = "{:.12f}".format(np.mean(train_losses_epoch)), \
                             train_preds=train_preds)
 
                     if bidx % SAVE_EVERY_N_BATCHES == 0 and bidx > 0:
@@ -197,6 +199,7 @@ if __name__ == "__main__":
 
                 model.eval()
                 with torch.no_grad():
+                    valid_losses_epoch = []
                     tqdm_inner = tqdm.tqdm(validDL)
                     for bidx, (seq, seq_len, acq, def1y) in enumerate(tqdm_inner):
                         tqdm_inner.set_description('Valid: %i' % bidx)
@@ -206,17 +209,17 @@ if __name__ == "__main__":
                         def1y = def1y.to(device)
                         def1y_hat = model(seq, acq, seq_len, def1y)
                         loss = weightedLoss(def1y, def1y_hat, seq_len)
-                        valid_losses.append(loss.item())
+                        valid_losses_epoch.append(loss.item())
                         valid_preds +=torch.sum(seq_len).item()
 
                         if bidx % LOSS_EVERY_N_BATCHES  == 0:
                             tqdm_inner.set_postfix( \
-                                validLoss = "{:.12f}".format(np.sum(valid_losses)/valid_preds), \
+                                validLoss = "{:.12f}".format(np.mean(valid_losses_epoch)), \
                                 valid_preds = valid_preds)
 
                 t.set_postfix(\
-                    trainLoss = "{:.12f}".format(np.sum(train_losses)/train_preds), \
-                    validLoss = "{:.12f}".format(np.sum(valid_losses)/valid_preds))
+                    trainLoss = "{:.12f}".format(np.mean(train_losses_epoch)), \
+                    validLoss = "{:.12f}".format(np.mean(valid_losses_epoch)))
 
                 # save losses and model
                 torch.save({ \
@@ -229,6 +232,9 @@ if __name__ == "__main__":
                     'valid_preds' : valid_preds \
                     }, MODEL_SAVED \
                 )
+
+                train_losses.append(np.mean(train_losses_epoch))
+                valid_losses.append(np.mean(valid_losses_epoch))
 
     except KeyboardInterrupt:
         print ('Saving the model state before exiting')
