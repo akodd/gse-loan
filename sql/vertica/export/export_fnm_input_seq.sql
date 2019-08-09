@@ -7,6 +7,7 @@ with pack_sequence as (
         cast(nvl(servicer_id, 0) as int) servicer_id,
         cast(default_1y as int) default_1y,
         cast(dlq as int) dlq,
+        cast(default_dist as int) default_dist,
         cast(age as int) age,
         cast(int_rate as float) int_rate,
         cast(current_upb as float) current_upb,
@@ -28,6 +29,7 @@ fill_forward as (
         servicer_id,
         default_1y,
         dlq,
+        default_dist,
         last_value (age ignore nulls) over (
             partition by loan_id order by yyyymm
         ) as age,
@@ -50,6 +52,7 @@ fill_backward as (
         servicer_id,
         default_1y,
         dlq,
+        default_dist,
         first_value (age ignore nulls) over (
             partition by loan_id order by yyyymm
             ROWS BETWEEN current row AND UNBOUNDED FOLLOWING
@@ -81,6 +84,11 @@ select
     servicer_id,
     default_1y,
     dlq,
+    default_dist,
+    case
+        when default_dist > 0 then default_dist + 7
+        else dlq
+    end dlq_adj,
     age,
     int_rate,
     current_upb,
