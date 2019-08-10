@@ -1,0 +1,24 @@
+FROM nvcr.io/nvidia/pytorch:19.07-py3
+
+# Bring in changes from outside container to /tmp
+# (assumes my-pytorch-modifications.patch is in same directory as Dockerfile)
+# COPY my-pytorch-modifications.patch /tmp
+
+# Change working directory to PyTorch source path
+WORKDIR /opt/pytorch
+
+# Apply modifications
+# RUN patch -p1 < /tmp/my-pytorch-modifications.patch
+
+# Rebuild PyTorch
+RUN cd pytorch && \
+    TORCH_CUDA_ARCH_LIST="5.2 6.0 6.1 7.0 7.5+PTX" \
+    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" \
+    NCCL_INCLUDE_DIR="/usr/include/" \
+    NCCL_LIB_DIR="/usr/lib/" \
+    python setup.py install && python setup.py clean
+
+# Reset default working directory
+WORKDIR /workspace
+
+# docker build tch/pytorch:1.0.2

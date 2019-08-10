@@ -1,9 +1,9 @@
 version: '3'
 services:
-  jupyter-labn:
+  jupyter:
     build: ./docker/jupyter
     #image: tensorflow/tensorflow:latest-gpu-py3-jupyter
-    shm_size: '1gb'
+    shm_size: '40gb'
     ports:
       - 6006:6006
       - 6007:6007
