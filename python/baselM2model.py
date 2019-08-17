@@ -65,7 +65,7 @@ def paddingCollator(batch):
     seq_batch = [torch.from_numpy(batch[i][0]) for i in range(len(batch))]
 
     seq_lengths = [seq_batch[b].shape[0] for b in range(len(seq_batch))]
-    seq_lengths, seq_perm_idx = torch.Tensor(seq_lengths).int().sort(0, descending=True)
+    seq_lengths, seq_perm_idx = torch.Tensor(seq_lengths).long().sort(0, descending=True)
 
     seq_batch = pad_sequence(seq_batch, batch_first=True)
     seq_batch = seq_batch[seq_perm_idx, :, :]
@@ -141,7 +141,7 @@ class BaselM2Model(nn.Module):
         e = self.embegging_dpout(e)
 
         default_1y_hat = torch.zeros_like(default_1y)
-        for t in range(total_length):
+        for t in range(int(total_length)):
             seq_out = output[:, t, :]
             lin_in = torch.cat([e, seq_out], 1)
             lin_out = self.linear(lin_in)
@@ -196,28 +196,28 @@ def makeEmeddings(acq, embeding_dim=2):
 if __name__ == "__main__":
     TRAIN_PATH = '/home/user/notebooks/data/train'
     VALID_PATH = '/home/user/notebooks/data/valid'
-    MODEL_PATH = '/home/user/notebooks/data/model/baselm2'
+    MODEL_PATH = '/home/user/notebooks/data/model/baselm2_full'
+    SUMMARY_PATH = '/home/user/notebooks/runs/baselm2/full'
     MODEL_SAVED = MODEL_PATH + '/baselm2.pth'
 
-    train_acq_numpy, train_idx_to_seq, train_seq_numpy = load_data(TRAIN_PATH)
-    valid_acq_numpy, valid_idx_to_seq, valid_seq_numpy = load_data(VALID_PATH)
-
-    acq_embs = makeEmeddings(train_acq_numpy, embeding_dim=2)
-    
-    train_ds = FNMDatasetM2(train_acq_numpy, train_idx_to_seq, train_seq_numpy, 1.5)
-    valid_ds = FNMDatasetM2(valid_acq_numpy, valid_idx_to_seq, valid_seq_numpy, 1.5)
-
-    print("Number of train acq: {:,}".format(len(train_ds)))
-    print("Number of valid acq: {:,}".format(len(valid_ds)))
-    
-
-    BATCH_SIZE = 5000 # TODO: change back to 10000
+    BATCH_SIZE = 8000 # TODO: change back to 10000
     NUM_WORKERS = 5 # change back to 10 TODO:
     BATCH_STOP = 100
     NUM_EPOCHS = 100
     LOSS_EVERY_N_BATCHES=10
     SAVE_EVERY_N_BATCHES=100
 
+    train_acq, train_idx_to_seq, train_seq = load_data(TRAIN_PATH)
+    valid_acq, valid_idx_to_seq, valid_seq = load_data(VALID_PATH)
+
+    acq_embs = makeEmeddings(train_acq, embeding_dim=2)
+    
+    train_ds = FNMDatasetM2(train_acq, train_idx_to_seq, train_seq, 0)
+    valid_ds = FNMDatasetM2(valid_acq, valid_idx_to_seq, valid_seq, 0)
+
+    print("Number of train acq: {:,}".format(len(train_ds)))
+    print("Number of valid acq: {:,}".format(len(valid_ds)))
+    
     trainDL = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle = True, \
         collate_fn=paddingCollator, num_workers=NUM_WORKERS)
     validDL = DataLoader(valid_ds, batch_size=BATCH_SIZE, shuffle = True, \
@@ -226,13 +226,24 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     #device = torch.device('cpu') #TODO: change back to cuda
 
-    model = BaselM2Model(n_features=11, lstm_size=50, linear_size=5, \
-        embed_dims=acq_embs, embed_drp=0.1).to(device)
-    loss_function = nn.CrossEntropyLoss().to(device)
+    model = BaselM2Model(n_features=11, lstm_size=75, linear_size=25, \
+        embed_dims=acq_embs, embed_drp=0.1)
+    loss_function = nn.CrossEntropyLoss()
     optimizer = optim.Adam(params=model.parameters())
     checkpoint_epoch = 0
     train_losses = []
     valid_losses = []
+
+    writer = SummaryWriter(SUMMARY_PATH)
+    dataiter = iter(trainDL)
+    seq, seq_len, acq, def1y = dataiter.next()
+    #seq = seq[0, :, :].view(1, -1)
+    #writer.add_graph(model, (seq[0:1, :, :], seq_len[0:1], acq[0:1, :], def1y[0:1, :]), True)
+    writer.add_graph(model, (seq, acq, seq_len, def1y), False)
+    writer.flush()
+
+    model = model.to(device)
+    loss_function = loss_function.to(device)
 
     if path.exists(MODEL_SAVED):
         print('Loading model checkpoint: {}'.format(MODEL_SAVED))
@@ -243,14 +254,14 @@ if __name__ == "__main__":
         train_losses = checkpoint['train_losses']
         valid_losses = checkpoint['valid_losses']
 
-    writer = SummaryWriter('runs/baselM2model')
-    writer.add_graph(model)
-    writer.close()
 
     # TODO:
     if torch.cuda.device_count() > 1:
         print("Training on", torch.cuda.device_count(), "GPUs")
         model = nn.DataParallel(model)
+
+    training_iter = 0
+    validation_iter = 0
 
     try:
         with tqdm.trange(checkpoint_epoch, checkpoint_epoch + NUM_EPOCHS) as t:
@@ -274,10 +285,12 @@ if __name__ == "__main__":
                     optimizer.step()
 
                     if bidx % LOSS_EVERY_N_BATCHES  == 0:
-                        tqdm_inner.set_postfix( \
-                            trainLoss = "{:.12f}".format(np.mean(train_losses_epoch)))
+                        mean_loss = np.mean(train_losses_epoch)
+                        tqdm_inner.set_postfix(trainLoss = "{:.12f}".format(mean_loss))
+                        writer.add_scalar('loss/training', mean_loss, training_iter)
+                        writer.flush()
 
-                    if bidx % SAVE_EVERY_N_BATCHES == 0 and bidx > 0:
+                    if bidx % SAVE_EVERY_N_BATCHES == SAVE_EVERY_N_BATCHES - 1:
                         torch.save({ \
                             'epoch': epoch,
                             'model_state_dict': model.module.state_dict(), \
@@ -286,6 +299,7 @@ if __name__ == "__main__":
                             'valid_losses' : valid_losses \
                             }, MODEL_SAVED \
                         )
+                    training_iter += 1
 
                 model.eval()
                 with torch.no_grad():
@@ -302,8 +316,14 @@ if __name__ == "__main__":
                         valid_losses_epoch.append(loss.item())
 
                         if bidx % LOSS_EVERY_N_BATCHES  == 0:
+                            mean_loss = np.mean(valid_losses_epoch)
                             tqdm_inner.set_postfix( \
-                                validLoss = "{:.12f}".format(np.mean(valid_losses_epoch)))
+                                validLoss = "{:.12f}".format(mean_loss))
+                            writer.add_scalar(\
+                                    'loss/validation',
+                                    mean_loss, validation_iter
+                                )
+                        validation_iter += 1
 
                 t.set_postfix(\
                     trainLoss = "{:.12f}".format(np.mean(train_losses_epoch)), \
@@ -332,5 +352,6 @@ if __name__ == "__main__":
                     'valid_losses' : valid_losses
                     }, MODEL_SAVED \
                 )
+    writer.close()
 
 
