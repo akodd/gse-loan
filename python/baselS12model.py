@@ -13,7 +13,6 @@ import tqdm
 from os import path
 
 DEBUG = False
-QA_CHECK = True
 
 bad_idx = -1;
 bad_chunk = -1;
@@ -79,10 +78,10 @@ class FNMDatasetS12(Dataset):
 
         # skip default_1y, yyyymm
         if DEBUG:
-            sequence = self.seq[0][idx_begin:idx_end, 2:]
+            sequence = self.seq[chunk_num][idx_begin:idx_end, 2:]
         else:
             sequence = self.seq[chunk_num][idx_begin:idx_end, 2:]
-        dlq = sequence[:, 2].astype(int)
+        dlq = sequence[:, 0].astype(int)
         dlq_one_hot = np.eye(19, dtype=np.float32)[dlq[:-self.predict_ahead]] # dlq is between 0 and 6 + 12
         sequence = np.concatenate([
             dlq_one_hot, 
@@ -91,13 +90,6 @@ class FNMDatasetS12(Dataset):
         target_dlq = dlq[-self.predict_ahead:]
         #target_upb = sequence[-self.predict_ahead:, 5]
         #target = np.concatenate([target_dlq, target_upb], axis=1)
-        # if QA_CHECK:
-        #     if (target_dlq.shape[0]!=12):
-        #         print('\n####\n')
-        #         print('chunk_iD: {}'.format(chunk_num))
-        #         print('itemID' + str(itemID))
-        #         print('begin: end: {idx_begin}')
-        #         print('begin: end: {}:{}'.format(idx_begin, idx_end))
 
         return sequence, account, target_dlq # predict DLQ for now
 
@@ -139,11 +131,11 @@ class BaselS12Model(nn.Module):
 
         self.linear1 = nn.Linear(lstm_size, 100)
         self.bn1 = nn.BatchNorm1d(100)
-        self.dpout1 = nn.Dropout(0.5)
+        self.dpout1 = nn.Dropout(0.3)
 
         self.linear2 = nn.Linear(100, 250)
         self.bn2 = nn.BatchNorm1d(250)
-        self.dpout2 = nn.Dropout(0.5)
+        self.dpout2 = nn.Dropout(0.3)
         
         self.linear3 = nn.Linear(250, 19*12)
         self.bn3 = nn.BatchNorm1d(19*12)
@@ -210,7 +202,7 @@ def paddingCollator(batch):
 def load_data(data_path):
     acquisition_nname = data_path + '/fnm_input_acq.npy'
     if DEBUG:
-        sequence_nname = data_path + '/fnm_input_seq_0.npy' 
+        sequence_nname = data_path + '/fnm_input_seq_*.npy' 
     else:
         sequence_nname = data_path + '/fnm_input_seq_*.npy' 
     idx_to_seq_nname = data_path + '/fnm_input_idx_to_seq.npy'
@@ -253,15 +245,15 @@ if __name__ == "__main__":
         BATCH_SIZE = 512 #12*2**10
         NUM_WORKERS = 16
     #BATCH_STOP = 100
-    NUM_EPOCHS = 10
+    NUM_EPOCHS = 90
     LOSS_EVERY_N_BATCHES=200
     SAVE_EVERY_N_BATCHES=1000
 
     train_acq, train_idx_to_seq, train_seq = load_data(TRAIN_PATH)
     valid_acq, valid_idx_to_seq, valid_seq = load_data(VALID_PATH)
 
-    train_ds = FNMDatasetS12(train_acq, train_idx_to_seq, train_seq, 8)
-    valid_ds = FNMDatasetS12(valid_acq, valid_idx_to_seq, valid_seq, 8)
+    train_ds = FNMDatasetS12(train_acq, train_idx_to_seq, train_seq, 10)
+    valid_ds = FNMDatasetS12(valid_acq, valid_idx_to_seq, valid_seq, 10)
 
     print("Number of train acq: {:,}".format(len(train_ds)))
     print("Number of valid acq: {:,}".format(len(valid_ds)))
@@ -280,7 +272,7 @@ if __name__ == "__main__":
     acq_embs = makeEmeddings(train_acq, embeding_dim=2)
 
     model = BaselS12Model(\
-        seq_n_features=22, lstm_size=100, lstm_layers=2, lstm_dropout=0.5, 
+        seq_n_features=22, lstm_size=100, lstm_layers=3, lstm_dropout=0.3, 
             embed_dims = acq_embs)
     loss_function = nn.CrossEntropyLoss(reduction='sum')
     optimizer = optim.Adam(params=model.parameters())
@@ -288,7 +280,7 @@ if __name__ == "__main__":
     train_losses = []
     valid_losses = []
 
-    writer = SummaryWriter(SUMMARY_PATH)
+    writer = SummaryWriter(SUMMARY_PATH, comment='fixed_seq_ind_2')
    #  dataiter = iter(trainDL)
    #  seq, seq_len, acq, target_dlq = dataiter.next()
    #  writer.add_graph(model, (seq, seq_len, acq), False)
@@ -338,20 +330,11 @@ if __name__ == "__main__":
                     if bidx % LOSS_EVERY_N_BATCHES  == 0:
                         mean_loss = np.sum(train_losses_epoch)/len(train_losses_epoch)/BATCH_SIZE
                         tqdm_inner.set_postfix(trainLoss = "{:.12f}".format(mean_loss))
-                        writer.add_scalar('loss/training', mean_loss, training_iter)
-                        writer.flush()
+                        if not DEBUG:
+                            writer.add_scalar('loss/training', mean_loss, training_iter)
 
                     if bidx % SAVE_EVERY_N_BATCHES == SAVE_EVERY_N_BATCHES - 1:
-                        if DEBUG:
-                            torch.save({ \
-                                    'epoch': epoch,
-                                    'model_state_dict': model.state_dict(), \
-                                    'optimizer_state_dict': optimizer.state_dict(), \
-                                    'train_losses' : train_losses, \
-                                    'valid_losses' : valid_losses \
-                                    }, MODEL_SAVED \
-                                )
-                        else:
+                        if not DEBUG:
                             torch.save({ \
                                 'epoch': epoch,
                                 'model_state_dict': model.module.state_dict(), \
@@ -380,10 +363,11 @@ if __name__ == "__main__":
                             mean_loss = np.sum(valid_losses_epoch)/len(valid_losses_epoch)/BATCH_SIZE
                             tqdm_inner.set_postfix( \
                                 validLoss = "{:.12f}".format(mean_loss))
-                            writer.add_scalar(\
-                                    'loss/validation',
-                                    mean_loss, validation_iter
-                                )
+                            if not DEBUG:
+                                writer.add_scalar(\
+                                        'loss/validation',
+                                        mean_loss, validation_iter
+                                    )
                         validation_iter += 1
 
                 t.set_postfix(\
@@ -391,16 +375,7 @@ if __name__ == "__main__":
                     validLoss = "{:.12f}".format(np.sum(valid_losses_epoch)/len(valid_losses_epoch)/BATCH_SIZE))
 
                 # save losses and model
-                if DEBUG:
-                    torch.save({ \
-                            'epoch': epoch,
-                            'model_state_dict': model.state_dict(), \
-                            'optimizer_state_dict': optimizer.state_dict(), \
-                            'train_losses' : train_losses, \
-                            'valid_losses' : valid_losses \
-                            }, MODEL_SAVED \
-                        )
-                else:
+                if not DEBUG:
                     torch.save({ \
                         'epoch': epoch,
                         'model_state_dict': model.module.state_dict(), \
@@ -415,16 +390,7 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         print ('Saving the model state before exiting')
-        if DEBUG:
-            torch.save({ \
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(), \
-                    'optimizer_state_dict': optimizer.state_dict(), \
-                    'train_losses' : train_losses, \
-                    'valid_losses' : valid_losses \
-                    }, MODEL_SAVED \
-                )
-        else:
+        if not DEBUG:
             torch.save({ \
                 'epoch': epoch,
                 'model_state_dict': model.module.state_dict(), \
