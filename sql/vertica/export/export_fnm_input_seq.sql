@@ -20,7 +20,8 @@ with pack_sequence as (
     from fnm_input_seq
     where train_valid_test_ind = TVT_SLICE
         and LOWER_BOUNDARY <= r 
-        and r < UPPER_BOUNDARY 
+        and r < UPPER_BOUNDARY
+        and loan_id not in (select loan_id from fnm_gapped_loans)
 ),
 fill_forward as (
     select

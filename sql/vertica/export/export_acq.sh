@@ -2,9 +2,9 @@
 
 VERTICA_EXPORT_DIR='/home/dbadmin/docker'
 
-TRAIN_TARGET_DIR='../../../data/train'
-VALID_TARGET_DIR='../../../data/valid'
-TEST_TARGET_DIR='../../../data/test'
+TRAIN_TARGET_DIR='../../../data/train/parquet'
+VALID_TARGET_DIR='../../../data/valid/parquet'
+TEST_TARGET_DIR='../../../data/test/parquet'
 
 mkdir -p ${TRAIN_TARGET_DIR}
 mkdir -p ${VALID_TARGET_DIR}
@@ -53,3 +53,5 @@ echo "Moving Parquet file to ${TEST_TARGET_DIR}"
 sudo mv \
     ../../../data-db/vertica/fnm_input_acq_parquet \
     ${TEST_TARGET_DIR}/fnm_input_acq_parquet
+
+sudo chmod a+r ${TEST_TARGET_DIR}/fnm_input_acq_parquet

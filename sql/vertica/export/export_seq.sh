@@ -2,9 +2,9 @@
 
 VERTICA_EXPORT_DIR='/home/dbadmin/docker'
 
-TRAIN_TARGET_DIR='../../../data/train'
-VALID_TARGET_DIR='../../../data/valid'
-TEST_TARGET_DIR='../../../data/test'
+TRAIN_TARGET_DIR='../../../data/train/parquet'
+VALID_TARGET_DIR='../../../data/valid/parquet'
+TEST_TARGET_DIR='../../../data/test/parquet'
 
 mkdir -p ${TRAIN_TARGET_DIR}
 mkdir -p ${VALID_TARGET_DIR}
@@ -30,7 +30,11 @@ run_sql () {
 }
 
 # Extract Training Data
-seq_cuts=(0.0 0.08 0.16 0.24 0.32 0.40 0.48 0.56 0.64 0.72 0.80)
+echo 'Exporting training data'
+seq_cuts=(0.00 0.02 0.04 0.06 0.08 0.10 0.12 0.14 0.16 0.18 0.20 \
+          0.22 0.24 0.26 0.28 0.30 0.32 0.34 0.36 0.38 0.40 0.42 \
+          0.44 0.46 0.48 0.50 0.52 0.54 0.56 0.58 0.60 0.62 0.64 \
+          0.66 0.68 0.70 0.72 0.74 0.76 0.78 0.80)
 for (( i=1; i<${#seq_cuts[@]}; i++ ))
 do
     chunk=$(($i-1))
@@ -41,27 +45,37 @@ do
     echo "Moving Parquet file to ${TRAIN_TARGET_DIR}"
     sudo mv \
         ../../../data-db/vertica/fnm_input_seq_parquet_${chunk} \
-        ${TRAIN_TARGET_DIR}/fnm_input_seq_parquet_${chunk}
+        ${TRAIN_TARGET_DIR}/fnm_input_seq_parquet_${seq_cuts[i-1]}
 done
 
 # Extract Validation Data
 echo 'Exporting validation data'
-VERTICA_CHUNK_NAME="${VERTICA_EXPORT_DIR}/fnm_input_seq_parquet"
-sql_stmt=$( make_seq_sql $VERTICA_CHUNK_NAME 1 0 1.1 ) #1 is for validation
-echo `date +'%Y-%m-%d %H:%M:%S'`, "Exporting: ${VERTICA_CHUNK_NAME}"
-run_sql "${sql_stmt}"
-echo "Moving Parquet file to ${VALID_TARGET_DIR}"
-sudo mv \
-    ../../../data-db/vertica/fnm_input_seq_parquet \
-    ${VALID_TARGET_DIR}/fnm_input_seq_parquet_0
+seq_cuts=(0.80 0.82 0.84 0.86 0.88 0.90)
+for (( i=1; i<${#seq_cuts[@]}; i++ ))
+do
+    chunk=$(($i-1))
+    VERTICA_CHUNK_NAME="${VERTICA_EXPORT_DIR}/fnm_input_seq_parquet_${chunk}"
+    sql_stmt=$( make_seq_sql $VERTICA_CHUNK_NAME 1 ${seq_cuts[i-1]} ${seq_cuts[i]} ) #1 is for validation
+    echo `date +'%Y-%m-%d %H:%M:%S'`, "Exporting: ${VERTICA_CHUNK_NAME}"
+    run_sql "${sql_stmt}"
+    echo "Moving Parquet file to ${VALID_TARGET_DIR}"
+    sudo mv \
+        ../../../data-db/vertica/fnm_input_seq_parquet_${chunk} \
+        ${VALID_TARGET_DIR}/fnm_input_seq_parquet_${seq_cuts[i-1]}
+done
 
 # Extract Testing Data
 echo 'Exporting testing data'
-VERTICA_CHUNK_NAME="${VERTICA_EXPORT_DIR}/fnm_input_seq_parquet"
-sql_stmt=$( make_seq_sql $VERTICA_CHUNK_NAME 2 0 1.1 ) #2 is for validation
-echo `date +'%Y-%m-%d %H:%M:%S'`, "Exporting: ${VERTICA_CHUNK_NAME}"
-run_sql "${sql_stmt}"
-echo "Moving Parquet file to ${TEST_TARGET_DIR}"
-sudo mv \
-    ../../../data-db/vertica/fnm_input_seq_parquet \
-    ${TEST_TARGET_DIR}/fnm_input_seq_parquet_0
+seq_cuts=(0.90 0.92 0.94 0.96 0.98 1.00)
+for (( i=1; i<${#seq_cuts[@]}; i++ ))
+do
+    chunk=$(($i-1))
+    VERTICA_CHUNK_NAME="${VERTICA_EXPORT_DIR}/fnm_input_seq_parquet_${chunk}"
+    sql_stmt=$( make_seq_sql $VERTICA_CHUNK_NAME 2 ${seq_cuts[i-1]} ${seq_cuts[i]} ) #2 is for validation
+    echo `date +'%Y-%m-%d %H:%M:%S'`, "Exporting: ${VERTICA_CHUNK_NAME}"
+    run_sql "${sql_stmt}"
+    echo "Moving Parquet file to ${TEST_TARGET_DIR}"
+    sudo mv \
+        ../../../data-db/vertica/fnm_input_seq_parquet_${chunk} \
+        ${TEST_TARGET_DIR}/fnm_input_seq_parquet_${seq_cuts[i-1]}
+done

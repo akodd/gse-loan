@@ -14,4 +14,5 @@ select
     cast (nvl(zip3_id, 0)              as int)  as zip3_id             
 from fnm_input_acq
 where train_valid_test_ind = TVT_SLICE
+and loan_id not in (select loan_id from fnm_gapped_loans)
 ;
