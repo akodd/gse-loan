@@ -40,10 +40,18 @@ class FNMMacrosDataset(Dataset):
         self.ym2idx = ym2idx
         ## clean up short sequencues
         # give at least 12 months to train - hardcode for now
+        print('Initial acq: {:,}'.format(self.acq.shape[0]))
         good_seq_idx = np.where(idx_to_seq[:, 2] - idx_to_seq[:, 1] >= 12 + self.predict_ahead)
         self.idx_to_seq = self.idx_to_seq[good_seq_idx]
         self.acq = self.acq[good_seq_idx]
         # end clean up
+        print('Non-short acq: {:,}'.format(self.acq.shape[0]))
+        # remove accounts with gaps
+        #gap_idx = np.array(self.gap(), dtype=np.int)
+        #self.idx_to_seq = self.idx_to_seq[-gap_idx]
+        #self.acq = self.acq[-gap_idx]
+        # end gapless
+        #print('Gapless acq: {:,}'.format(self.acq.shape[0]))
         if ratio > 0:
             defaulted = self.acq[:,0]==1
             n_defaulted = np.sum(defaulted)
@@ -60,6 +68,19 @@ class FNMMacrosDataset(Dataset):
     def __len__(self):
         return self.length
         #return 100
+
+    def gap(self):
+        gap_idx = []
+        for idx in tqdm.trange(self.idx_to_seq.shape[0]):
+            seq_info = self.idx_to_seq[idx, :]
+            chunk_num = seq_info[0]
+            idx_begin = seq_info[1]
+            idx_end = seq_info[2]
+            ym = self.seq[chunk_num][idx_begin:idx_end, 1]
+            if not np.all((ym == 1) + (ym == 89)):
+                gap_idx.append(idx)
+        return gap_idx
+        
     
     def __getitem__(self, itemID):
         idx = self.idx_reduction[itemID]
@@ -74,10 +95,19 @@ class FNMMacrosDataset(Dataset):
         dlq = sequence[:, 1].astype(int) # yyyymm, dlq
         dlq_one_hot = np.eye(19, dtype=np.float32)[dlq[:-self.predict_ahead]] # dlq is between 0 and 6 + 12
 
-        ymb, yme = self.ym2idx[sequence[0, 0]], self.ym2idx[sequence[-1, 0]]
+        ymb, yme = int(self.ym2idx[sequence[0, 0]]), int(self.ym2idx[sequence[-1, 0]])
         macro = self.macros[ymb:(yme+1)]
 
         yyyymm = sequence[:-self.predict_ahead, 0]
+
+        # print(itemID, idx, seq_info, sequence[:-self.predict_ahead, 1:].shape, 
+        #     macro[:-self.predict_ahead].shape,
+        #     dlq_one_hot.shape)
+
+        macro_out = macro[:-self.predict_ahead]
+        seq_out = sequence[:-self.predict_ahead, 1:]
+        if (macro_out.shape[0]!=seq_out.shape[0]):
+            print('Macro gap: ' + seq_info)
 
         sequence = np.concatenate([
             sequence[:-self.predict_ahead, 1:], # yyyymm is column 0
@@ -108,7 +138,7 @@ def paddingCollator(batch):
     acq_batch = torch.stack(acq_batch)
     acq_batch = acq_batch[seq_perm_idx, :]
 
-    target_batch = [torch.from_numpy(batch[i][3]) for i in range(len(batch))]
+    target_batch = [torch.from_numpy(batch[i][2]) for i in range(len(batch))]
     target_batch = torch.stack(target_batch)
     target_batch = target_batch[seq_perm_idx, :]    
 
@@ -145,6 +175,8 @@ def load_data(data_path, verbose=True):
     else:
         itt = seq_files
     for chunk_idx, seq_chunk in enumerate(itt):
+        if verbose:
+            itt.set_description('Loading: ' + seq_chunk)
         seq[chunk_idx] = np.load(seq_chunk)
         
     return acq, idx_to_seq, seq, macros, ym2idx
@@ -156,26 +188,40 @@ if __name__ == "__main__":
     TEST_PATH  = '/home/user/notebooks/data/test'
 
     def load_report(data_path):
-        acq, idx_to_seq, seq, macro, ym2idx = load_data(data_path, False)
+        acq, idx_to_seq, seq, macro, ym2idx = load_data(data_path, True)
         print('acq.shape={}'.format(acq.shape))
         print('idx_to_seq.shape={}'.format(idx_to_seq.shape))
         print('macro.shape={}'.format(macro.shape))
         print('len(ym2idx)={}'.format(len(ym2idx)))
 
         for i in range(len(seq)):
-            print('seq[{}].shape={}'.format(i, seq[i].shape))
+            print('\tseq[{}].shape={}'.format(i, seq[i].shape))
 
 
+    # print('TRAIN DATA #######')
+    # load_report(TRAIN_PATH)
+    # print('VALID DATA #######')
+    # load_report(VALID_PATH)
+    # print('TEST DATA #######')
+    # load_report(TEST_PATH)
 
-    #load_report(TRAIN_PATH)
-    #load_report(VALID_PATH)
-    #load_report(TEST_PATH)
-
-    acq, idx_to_seq, seq, macro, ym2idx = load_data(VALID_PATH)
+    acq, idx_to_seq, seq, macro, ym2idx = load_data(TRAIN_PATH)
     dataset = FNMMacrosDataset(acq, idx_to_seq, seq, macro, ym2idx)
 
     print('Sequencies: {:,}'.format(len(dataset)))
 
+    BATCH_SIZE = 256
+    NUM_WORKERS = 10
+
     data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle = True, \
         collate_fn=paddingCollator, num_workers=NUM_WORKERS)
     
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #device = torch.device('cpu')
+
+    for bidx, (seq, seq_len, acq, target) in enumerate(tqdm.tqdm(data_loader)): 
+        seq = seq.to(device)
+        acq = acq.to(device)
+        seq_len = seq_len.to(device)
+        target = target.to(device)
