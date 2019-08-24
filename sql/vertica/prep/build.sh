@@ -6,6 +6,7 @@ sql_scripts=(
     fnm_input_acq
     fnm_input_seq
     #fnm_add_pkeys.sql
+    fnm_gapped_loans
 )
 
 for sql_script in "${sql_scripts[@]}"
