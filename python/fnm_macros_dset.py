@@ -210,8 +210,8 @@ if __name__ == "__main__":
 
     print('Sequencies: {:,}'.format(len(dataset)))
 
-    BATCH_SIZE = 256
-    NUM_WORKERS = 10
+    BATCH_SIZE = 512
+    NUM_WORKERS = 8
 
     data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle = True, \
         collate_fn=paddingCollator, num_workers=NUM_WORKERS)
