@@ -25,7 +25,8 @@ class FNMMacrosDataset(Dataset):
                 find correponding chunk. Second and third map to begin and end
                 index in the seq chunk
             seq: the list of numpy arrays. Each array has the following fiels:
-                default_1y, yyyymm, dlq_adj, age, int_rate, current_upb_norm
+                default_1y, yyyymm, dlq_adj, age, int_rate, current_upb_norm,
+                msa, modification_flag
             macros: the numpy array of macro economic varaibles
             ym2idx: dictionary of yyyymm integer to index in macros mapping
             ratio: if above zero then non defaulted are scaled as ratio of defaulted
@@ -46,12 +47,6 @@ class FNMMacrosDataset(Dataset):
         self.acq = self.acq[good_seq_idx]
         # end clean up
         print('Non-short acq: {:,}'.format(self.acq.shape[0]))
-        # remove accounts with gaps
-        #gap_idx = np.array(self.gap(), dtype=np.int)
-        #self.idx_to_seq = self.idx_to_seq[-gap_idx]
-        #self.acq = self.acq[-gap_idx]
-        # end gapless
-        #print('Gapless acq: {:,}'.format(self.acq.shape[0]))
         if ratio > 0:
             defaulted = self.acq[:,0]==1
             n_defaulted = np.sum(defaulted)
@@ -64,6 +59,9 @@ class FNMMacrosDataset(Dataset):
             self.length = self.acq.shape[0]
             self.idx_reduction = np.arange(self.length)
         self.acq_cat = np.max(self.acq[:, 1:], axis=0) # skip defaulted flag at 0 idx
+
+        # 
+
 
     def __len__(self):
         return self.length
@@ -93,13 +91,17 @@ class FNMMacrosDataset(Dataset):
         # skip default_1y
         sequence = self.seq[chunk_num][idx_begin:idx_end, 1:]
         dlq = sequence[:, 1].astype(int) # yyyymm, dlq
+        # clip DLQ to avoid 
+        # Assertion `cur_target >= 0 && cur_target < n_classes' failed.  
+        # at ../aten/src/THNN/generic/SpatialClassNLLCriterion.c:111
+        np.clip(dlq, 0, 18, out=dlq)
         dlq_one_hot = np.eye(19, dtype=np.float32)[dlq[:-self.predict_ahead]] # dlq is between 0 and 6 + 12
 
         ymb, yme = int(self.ym2idx[sequence[0, 0]]), int(self.ym2idx[sequence[-1, 0]])
         macro = self.macros[ymb:(yme+1)]
 
-        yyyymm = sequence[:-self.predict_ahead, 0]
-
+        yymmsamod = sequence[:-self.predict_ahead, [0, -2, -1]].astype(np.int64)
+        
         # print(itemID, idx, seq_info, sequence[:-self.predict_ahead, 1:].shape, 
         #     macro[:-self.predict_ahead].shape,
         #     dlq_one_hot.shape)
@@ -114,14 +116,14 @@ class FNMMacrosDataset(Dataset):
             macro[:-self.predict_ahead], 
             dlq_one_hot], axis=1)
 
+        account = account.astype(np.int64)
+
         target_dlq = dlq[-self.predict_ahead:]
+
         #target_upb = sequence[-self.predict_ahead:, 5]
         #target = np.concatenate([target_dlq, target_upb], axis=1)
 
-        return sequence, account, target_dlq # predict DLQ for now
-
-    def getAcqCat():
-        return self.acq_cat
+        return sequence, yymmsamod, account, target_dlq # predict DLQ for now
 
 
 def paddingCollator(batch):
@@ -134,18 +136,22 @@ def paddingCollator(batch):
     seq_batch = pad_sequence(seq_batch, batch_first=True)
     seq_batch = seq_batch[seq_perm_idx, :, :]
 
-    acq_batch = [torch.from_numpy(batch[i][1]) for i in range(len(batch))]
+    ymd_batch = [torch.from_numpy(batch[i][1]) for i in range(len(batch))]
+    ymd_batch = pad_sequence(ymd_batch, batch_first=True)
+    ymd_batch = ymd_batch[seq_perm_idx, :, :]
+
+    acq_batch = [torch.from_numpy(batch[i][2]) for i in range(len(batch))]
     acq_batch = torch.stack(acq_batch)
     acq_batch = acq_batch[seq_perm_idx, :]
 
-    target_batch = [torch.from_numpy(batch[i][2]) for i in range(len(batch))]
+    target_batch = [torch.from_numpy(batch[i][3]) for i in range(len(batch))]
     target_batch = torch.stack(target_batch)
     target_batch = target_batch[seq_perm_idx, :]    
 
-    return seq_batch, seq_lengths, acq_batch, target_batch
+    return seq_batch, seq_lengths, ymd_batch, acq_batch, target_batch
 
 
-def load_data(data_path, verbose=True):
+def load_data(data_path, verbose=True, oneChunkOnly=False):
     acquisition_nname = data_path + '/fnm_input_acq.npy'
     sequence_nname = data_path + '/fnm_input_seq_*.npy' 
     idx_to_seq_nname = data_path + '/fnm_input_idx_to_seq.npy'
@@ -178,6 +184,13 @@ def load_data(data_path, verbose=True):
         if verbose:
             itt.set_description('Loading: ' + seq_chunk)
         seq[chunk_idx] = np.load(seq_chunk)
+        if oneChunkOnly:
+            break
+    
+    if oneChunkOnly:
+        x = idx_to_seq[:, 0]==0
+        idx_to_seq = idx_to_seq[x, :]
+        acq = acq[x, :]
         
     return acq, idx_to_seq, seq, macros, ym2idx
 
@@ -205,13 +218,14 @@ if __name__ == "__main__":
     # print('TEST DATA #######')
     # load_report(TEST_PATH)
 
-    acq, idx_to_seq, seq, macro, ym2idx = load_data(TRAIN_PATH)
+    acq, idx_to_seq, seq, macro, ym2idx = load_data(TRAIN_PATH, True, True)
     dataset = FNMMacrosDataset(acq, idx_to_seq, seq, macro, ym2idx)
+
 
     print('Sequencies: {:,}'.format(len(dataset)))
 
     BATCH_SIZE = 512
-    NUM_WORKERS = 8
+    NUM_WORKERS = 0
 
     data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle = True, \
         collate_fn=paddingCollator, num_workers=NUM_WORKERS)
@@ -220,8 +234,9 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     #device = torch.device('cpu')
 
-    for bidx, (seq, seq_len, acq, target) in enumerate(tqdm.tqdm(data_loader)): 
+    for bidx, (seq, seq_len, ymd, acq, target) in enumerate(tqdm.tqdm(data_loader)): 
         seq = seq.to(device)
+        ymd = seq.to(ymd)
         acq = acq.to(device)
         seq_len = seq_len.to(device)
         target = target.to(device)
