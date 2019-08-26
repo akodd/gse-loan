@@ -26,7 +26,7 @@ class FNMMacrosDataset(Dataset):
                 index in the seq chunk
             seq: the list of numpy arrays. Each array has the following fiels:
                 default_1y, yyyymm, dlq_adj, age, int_rate, current_upb_norm,
-                msa, modification_flag
+                msa, servicer_id
             macros: the numpy array of macro economic varaibles
             ym2idx: dictionary of yyyymm integer to index in macros mapping
             ratio: if above zero then non defaulted are scaled as ratio of defaulted
@@ -100,7 +100,11 @@ class FNMMacrosDataset(Dataset):
         ymb, yme = int(self.ym2idx[sequence[0, 0]]), int(self.ym2idx[sequence[-1, 0]])
         macro = self.macros[ymb:(yme+1)]
 
-        yymmsamod = sequence[:-self.predict_ahead, [0, -2, -1]].astype(np.int64)
+        #yymmsamod = sequence[:-self.predict_ahead, [0, -2, -1]].astype(np.int64)
+        yymmsamod = np.concatenate([
+            np.arange(ymb, yme+1-self.predict_ahead).reshape(-1, 1),
+            sequence[:-self.predict_ahead, [-2, -1]]
+        ], axis=1).astype(np.int64)
         
         # print(itemID, idx, seq_info, sequence[:-self.predict_ahead, 1:].shape, 
         #     macro[:-self.predict_ahead].shape,
