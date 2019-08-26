@@ -11,10 +11,13 @@ import glob
 import numpy as np
 import tqdm
 import os
+import time
+import datetime
+from pytz import timezone
 
 from fnm_macros_dset import FNMMacrosDataset, paddingCollator, load_data
 
-class PitM12Model(nn.Module):
+class PitM1Model(nn.Module):
     r"""
      Fill up
     """
@@ -31,16 +34,16 @@ class PitM12Model(nn.Module):
                 tuple if the embedding size
             embed_drp: drop out percentage after embedding layer
         """
-        super(PitM12Model, self).__init__()
+        super(PitM1Model, self).__init__()
         self.emb_acq = nn.ModuleList([nn.Embedding(c, d) for c, d in emb_acq_dims])
         #Fix and add back
-        #self.emb_seq = nn.ModuleList([nn.Embedding(c, d) for c, d in emb_seq_dims])
+        self.emb_seq = nn.ModuleList([nn.Embedding(c, d) for c, d in emb_seq_dims])
 
         # total dim from embeddings
         emb_acq_dim_sum = sum(x[1] for x in emb_acq_dims)
         # TODO: fix and add back
-        #emb_seq_dim_sum = sum(x[1] for x in emb_seq_dims)
-        emb_seq_dim_sum = 0
+        emb_seq_dim_sum = sum(x[1] for x in emb_seq_dims)
+        #emb_seq_dim_sum = 0
         #self.total_bn_dim = acq_bn_dim + seq_bn_dim
         #self.emb_bn = nn.BatchNorm1d(self.total_bn_dim)
 
@@ -53,21 +56,21 @@ class PitM12Model(nn.Module):
             batch_first  = True
         )
 
-        lin1_size = 2 * lstm_size
+        lin1_size = 1 * lstm_size
         lin2_size = 2 * lin1_size
-        lin3_size = lstm_size
+        lin3_size = 1 * lstm_size
 
         self.linear1 = nn.Linear(lstm_size, lin1_size)
         self.bn1 = nn.BatchNorm1d(lin1_size)
-        self.dpout1 = nn.Dropout(0.3)
+        self.dpout1 = nn.Dropout(0.4)
 
         self.linear2 = nn.Linear(lin1_size, lin2_size)
         self.bn2 = nn.BatchNorm1d(lin2_size)
-        self.dpout2 = nn.Dropout(0.3)
+        self.dpout2 = nn.Dropout(0.4)
 
         self.linear3 = nn.Linear(lin2_size, lin3_size)
         self.bn3 = nn.BatchNorm1d(lin3_size)
-        self.dpout3 = nn.Dropout(0.3)        
+        self.dpout3 = nn.Dropout(0.4)        
         
         self.linear4 = nn.Linear(lin3_size, 19*12)
         #self.bn4 = nn.BatchNorm1d(19*12)
@@ -80,20 +83,20 @@ class PitM12Model(nn.Module):
         # acq = acq.long()
         ea = [embed(acq[:,i]) for i, embed in enumerate(self.emb_acq)]
         ea = torch.cat(ea,  1)
-        #e = functional.relu(e)
-        #e = self.embedding_bn(e)
+        #ea = functional.relu(ea)
+        #ea = self.embedding_bn(ea)
         # reshape and replicate e to attach to each time index
         ea = ea.reshape(seq.shape[0], -1, ea.shape[1])\
             .expand(-1, seq.shape[1], -1)
 
         # embed ymd
         # TODO: fix indexes 200212 to 2 for examples then add back
-        #ey = [embed(ymd[:,i]) for i, embed in enumerate(self.emb_seq)]
-        #ey = torch.cat(ey,  1)
+        ey = [embed(ymd[:,:,i]) for i, embed in enumerate(self.emb_seq)]
+        ey = torch.cat(ey,  2)
 
         # glue embeddings to each time index of the seq
-        #s = torch.cat([seq, ea, ey], 2)
-        s = torch.cat([seq, ea], 2)
+        s = torch.cat([seq, ea, ey], 2)
+        #s = torch.cat([seq, ea], 2)
 
         # process sequence
         self.lstm.flatten_parameters()
@@ -101,7 +104,8 @@ class PitM12Model(nn.Module):
         packed_input = pack_padded_sequence(s, seq_len, 
                                             batch_first=True)
         _, (ht, _)  = self.lstm(packed_input)
-
+        #output, _ = pad_packed_sequence(packed_output, batch_first=True,
+        #                        total_length=total_length)
         # ht is the final element of the sequence shape (hidden_size, 1)
         # we are predicting 19 DLQ x 12 months
         out = ht[-1, :, :]
@@ -146,55 +150,11 @@ class TrainingContext:
         
         self.device = torch.device("cpu")
 
-    def useGPU(self, use=False):
-        if use:
-            self.device = torch.device(\
-                "cuda" if torch.cuda.is_available() else "cpu")
-            self.model = self.model.to(self.device)
-            self.loss_function = self.loss_function.to(self.device)
-            if torch.cuda.device_count() > 1:
-                print("Training on", torch.cuda.device_count(), "GPUs")
-                self.model = nn.DataParallel(self.model)
-        else:
-            self.device = torch.device("cpu")
-
-    def loadModel(self):
-        if os.path.exists(self.model_path):
-            print('Loading model checkpoint: {}'.format(self.model_path))
-            checkpoint = torch.load(self.model_path)
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.train_losses = checkpoint['train_losses']
-            self.valid_losses = checkpoint['valid_losses']
-            checkpoint_epoch = checkpoint['epoch']
-        else:
-            checkpoint_epoch = 0
-        return checkpoint_epoch
-
-    def saveModel(self, epoch):
-        if self.device.type=='cpu':
-            module_dic = self.model.state_dict()
-        else:
-            module_dic = self.model.module.state_dict()
-        torch.save({ \
-            'epoch': epoch,
-            'model_state_dict': module_dic, \
-            'optimizer_state_dict': self.optimizer.state_dict(), \
-            'train_losses' : self.train_losses, \
-            'valid_losses' : self.valid_losses \
-            }, self.model_path \
-        )
-
     def trainStep(self, seq, seq_len, ymd, acq, target):
         self.model.zero_grad()
 
-        seq = seq.to(self.device)
-        ymd = ymd.to(self.device)
-        acq = acq.to(self.device)
-        seq_len = seq_len.to(self.device)
-        target = target.to(self.device)
-
         target_hat = self.model(seq, seq_len, ymd, acq)
+        target = target.to(target_hat.device)
         loss = self.loss_function(target_hat, target)
         loss_item = loss.item()
         loss.backward()
@@ -217,23 +177,14 @@ class TrainingContext:
                 tq.set_postfix(trainLoss = "{:.12f}".format(mean_loss))
                 #writer.add_scalar('loss/training', mean_loss, epoch*bidx)
 
-            if bidx % self.SAVE_EVERY_N_BATCHES == self.SAVE_EVERY_N_BATCHES - 1:
-                self.saveModel(epoch)
-
         mean_loss = np.mean(losses)/self.trainDL.batch_size
         self.train_losses.append(mean_loss)
         return mean_loss
 
     def validStep(self, seq, seq_len, ymd, acq, target):
-        seq = seq.to(self.device)
-        ymd = ymd.to(self.device)
-        acq = acq.to(self.device)
-        seq_len = seq_len.to(self.device)
-        target = target.to(self.device)
-
         target_hat = self.model(seq, seq_len, ymd, acq)
+        target = target.to(target_hat.device)
         loss = self.loss_function(target_hat, target)
-
         return loss.item()
 
     def validLoop(self, epoch):
@@ -257,9 +208,47 @@ class TrainingContext:
         return mean_loss
         
 
+    def useGPU(self, use=False):
+        if use:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device("cpu")
 
-def makeModel(params):
-    model = PitM12Model(
+        print('Using device: {}'.format(self.device.type))
+        self.model.to(self.device)
+        #self.loss_function = self.loss_function.to(self.device)
+
+
+    def loadModel(self):
+        if os.path.exists(self.model_path):
+            print('Loading model checkpoint: {}'.format(self.model_path))
+            checkpoint = torch.load(self.model_path)
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.train_losses = checkpoint['train_losses']
+            self.valid_losses = checkpoint['valid_losses']
+            checkpoint_epoch = checkpoint['epoch']
+        else:
+            checkpoint_epoch = 0
+        return checkpoint_epoch
+
+    def saveModel(self, epoch):
+        torch.save({ \
+            'epoch': epoch,
+            'model_state_dict': self.model.module.state_dict(), \
+            'optimizer_state_dict': self.optimizer.state_dict(), \
+            'train_losses' : self.train_losses, \
+            'valid_losses' : self.valid_losses \
+            }, self.model_path \
+        ) 
+
+    def makeParallel(self, use=False):
+        if use and torch.cuda.device_count() > 1:
+            print("Training on", torch.cuda.device_count(), "GPUs")
+            self.model = nn.DataParallel(self.model)
+
+def makeModel(model_params):
+    model = PitM1Model(
         seq_n_features = model_params['seq_n_features'], 
         lstm_size = model_params['lstm_size'], 
         lstm_layers = model_params['lstm_layers'], 
@@ -269,62 +258,71 @@ def makeModel(params):
     )
     return model
 
+def adjustModelPath(model_path, restart=True):
+    if not restart:
+        est = timezone('EST')
+        model_path = model_path + '/' + datetime.datetime.now(est)\
+            .strftime("%Y%m%d_%H%M%S")
+    if not os.path.exists(model_path):
+        os.makedirs(model_path)
+    return model_path
+
 
 if __name__ == "__main__":
     TRAIN_PATH = '/home/user/notebooks/data/train'
     VALID_PATH = '/home/user/notebooks/data/valid'
-    MODEL_PATH = '/home/user/notebooks/data/model/pitM1'
     SUMMARY_PATH = '/home/user/notebooks/runs/pitM1'
+    
+    # run specific model path
+    MODEL_PATH = adjustModelPath('/home/user/notebooks/data/model/pitM1', False);
+    print('Model will be saved in: '+MODEL_PATH)
     MODEL_SAVED = MODEL_PATH + '/pitM1.pth'
-
-    if not os.path.exists(MODEL_PATH):
-        os.makedirs(MODEL_PATH)
 
     DEBUG = False
 
     if DEBUG:
-        BATCH_SIZE = 40
+        BATCH_SIZE = 3
         NUM_WORKERS = 0
         LOSS_EVERY_N_BATCHES=10
         SAVE_EVERY_N_BATCHES=1000
     else:
-        BATCH_SIZE = 512 #12*2**10
-        NUM_WORKERS = 8
+        BATCH_SIZE = 256 
+        NUM_WORKERS = 4
         LOSS_EVERY_N_BATCHES=100
         SAVE_EVERY_N_BATCHES=1000
 
-    NUM_EPOCHS = 100
+    NUM_EPOCHS = 10
     
     t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx = load_data(TRAIN_PATH, True, False)
     v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx = load_data(VALID_PATH, True, False)
 
-    train_ds = FNMMacrosDataset(t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx, 12, 10)
-    valid_ds = FNMMacrosDataset(v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx, 12, 10)
+    train_ds = FNMMacrosDataset(t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx, 12, 15)
+    valid_ds = FNMMacrosDataset(v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx, 12, 15)
 
     print("Number of train acq: {:,}".format(len(train_ds)))
     print("Number of valid acq: {:,}".format(len(valid_ds)))
     
     trainDL = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle = True, \
-        collate_fn=paddingCollator, num_workers=NUM_WORKERS)
+        collate_fn=paddingCollator, num_workers=NUM_WORKERS, pin_memory=True)
     validDL = DataLoader(valid_ds, batch_size=BATCH_SIZE, shuffle = True, \
-        collate_fn=paddingCollator, num_workers=NUM_WORKERS)
+        collate_fn=paddingCollator, num_workers=NUM_WORKERS, pin_memory=True)
 
     model_params = {
         'seq_n_features': 39, # seq + macros
-        'lstm_size': 250,
-        'lstm_layers': 4,
+        'lstm_size': 600,
+        'lstm_layers': 3,
         'lstm_dropout': 0.2,
-        'emb_acq_dims' : [(55, 2), # state id
+        'emb_acq_dims' : [(55, 25), # state id
                           (5, 2), # purpose_id
                           (4, 2), # mi_type_id
                           (4, 2), # occupancy_status_id
                           (2, 2), # product_type_id
                           (6, 2), # property_type_id
-                          (95, 2), # seller_id
-                          (1001, 3)], # zip3
-        'emb_seq_dims' : [(219, 2), # yyyymm
-                          (46, 2), # servicer
-                          (49741, 2)] #msa
+                          (95, 40), # seller_id
+                          (1001, 50)], # zip3
+        'emb_seq_dims' : [(219, 50), # yyyymm
+                          (407, 50), #msa
+                          (46, 23)] # servicer
     }
 
     model = makeModel(model_params)
@@ -342,9 +340,12 @@ if __name__ == "__main__":
         LOSS_EVERY_N_BATCHES
     )
 
-    checkpoint_epoch = fitCtx.loadModel()
-
     fitCtx.useGPU(not DEBUG)
+    checkpoint_epoch = fitCtx.loadModel()
+    fitCtx.makeParallel(not DEBUG)
+
+    print(fitCtx.model)
+    print(fitCtx.loss_function)
 
     #writer = SummaryWriter(SUMMARY_PATH, comment='fixed_seq_ind_2')
 
@@ -366,6 +367,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print ('Saving the model state before exiting')
         fitCtx.saveModel(epoch)
-    except RuntimeError as e:
-        print(e)
+    #except RuntimeError as e:
+    #    print(e)
     #writer.close()
