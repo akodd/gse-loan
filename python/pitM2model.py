@@ -53,7 +53,8 @@ class PitM2Model(nn.Module):
             hidden_size = lstm_size,
             num_layers  = lstm_layers,
             dropout     = lstm_dropout,
-            batch_first  = True
+            batch_first  = True,
+            bidirectional = True
         )
 
         lin1_size = 1 * lstm_size
@@ -110,7 +111,9 @@ class PitM2Model(nn.Module):
 
 
         # ht is the final element of the sequence shape (hidden_size, 1)
-        lat = ht[-1, :, :]
+        #output = output[:, :, :self.hidden_size] + output[:, :, self.hidden_size:]
+        lat = ht.view(self.lstm.num_layers, 2, -1, self.lstm.hidden_size)
+        lat = lat[-1, 0, :, :] + lat[-1, 1, :, :] #ht[-1, :, :]
         lat = self.latent_lin(lat)
 
         # split ht into mean and sd parts
