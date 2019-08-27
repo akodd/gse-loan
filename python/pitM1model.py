@@ -116,7 +116,7 @@ class PitM1Model(nn.Module):
         out = self.dpout2(out)
 
         out = self.bn3(functional.relu(self.linear3(out)))
-        #out = self.dpout2(out)
+        out = self.dpout3(out)
 
         out = self.linear4(out)
 
@@ -354,7 +354,6 @@ if __name__ == "__main__":
             for epoch in t:
                 t.set_description('Epoch: %i' % epoch)
                 train_loss = fitCtx.trainLoop(epoch)
-                #train_loss = 0
                 valid_loss = fitCtx.validLoop(epoch)
 
                 t.set_postfix(
