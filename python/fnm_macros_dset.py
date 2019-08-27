@@ -26,7 +26,7 @@ class FNMMacrosDataset(Dataset):
                 index in the seq chunk
             seq: the list of numpy arrays. Each array has the following fiels:
                 default_1y, yyyymm, dlq_adj, age, int_rate, current_upb_norm,
-                msa, servicer_id
+                msa_id, servicer_id
             macros: the numpy array of macro economic varaibles
             ym2idx: dictionary of yyyymm integer to index in macros mapping
             ratio: if above zero then non defaulted are scaled as ratio of defaulted
