@@ -75,7 +75,7 @@ class MacroMortEcoder(nn.Module):
         ea = [x(acq[:,i]) for i, (a, x) in enumerate(self.emb_acq.items())]
         ea = torch.cat(ea,  1)
         ea = ea.reshape(seq.shape[0], -1, ea.shape[1])\
-            .expand(-1, seq.shape[1], -1)
+            .expand(-1, seq.shape[1], -1)   
 
         ey = [x(ymd[:,:,i]) for i, (a, x) in enumerate(self.emb_seq.items())]
         ey = torch.cat(ey,  2)
@@ -118,31 +118,29 @@ class MacroMortDecoder(nn.Module):
         
         #post_input_size = (1 + self.lstm.bidirectional) * \
         #    self.lstm.num_layers * self.lstm.hidden_size
-        self.post_linblock = LinearBlock(self.lstm.hidden_size, post_lin_conf)
+        self.post_linblock = LinearBlock(self.lstm.hidden_size+9, post_lin_conf)
 
     def forward(self, zim, dlq, macro):
         self.lstm.flatten_parameters()
         zim = self.pre_linblock(zim)
 
         out = []
-        for t in range(12):
-            decinp = torch.cat([zim, dlq, macro[:, t, :]], 1)
-            decinp = decinp.unsqueeze(0) # sequence length is 1
-            _, (hx, _) = self.lstm(decinp)
 
-            dlq_dist = hx[-1, :, :]
-            dlq_dist = self.post_linblock(dlq_dist)
+        dlq = dlq.unsqueeze(1).expand(-1, 12, -1)
+        zim = zim.unsqueeze(1).expand(-1, 12, -1)
+        scen = torch.cat([dlq, zim, macro], 2)
+        lstm_out, _ = self.lstm(scen)
+        lstm_out = torch.cat([dlq, lstm_out], 2)
+        
+        for t in range(12):
+            dlq_dist = self.post_linblock(lstm_out[:, t, :])
             out.append(dlq_dist)
-            # batch, 9
-            _, idx = F.softmax(dlq_dist, 1).max(1)
-            dlq = torch.zeros_like(dlq)
-            dlq[torch.arange(dlq.shape[0]), idx]=1
 
         dlq_seq = torch.stack(out, 2) # (batch, 9[0,...,7,EOS], 12)
 
         return dlq_seq
 
-class CCARM3Model(nn.Module):
+class CCARM5Model(nn.Module):
     r"""
      Fill up
     """
@@ -158,7 +156,7 @@ class CCARM3Model(nn.Module):
                 tuple if the embedding size
             embed_drp: drop out percentage after embedding layer
         """
-        super(CCARM3Model, self).__init__()
+        super(CCARM5Model, self).__init__()
         self.encoder = macroMortEcoder
         self.decoder = macroMortDecoder    
 
@@ -318,7 +316,7 @@ def makeModel(model_params):
         post_lin_conf = model_params['decoder']['post_lin_conf'],
     )
 
-    model = CCARM3Model(encoder, decoder)
+    model = CCARM5Model(encoder, decoder)
     return model
 
 def adjustModelPath(model_path, restart=True):
@@ -334,12 +332,15 @@ def adjustModelPath(model_path, restart=True):
 if __name__ == "__main__":
     TRAIN_PATH = '/home/user/notebooks/data/train'
     VALID_PATH = '/home/user/notebooks/data/valid'
-    SUMMARY_PATH = '/home/user/notebooks/runs/ccarM3'
+    SUMMARY_PATH = '/home/user/notebooks/runs/ccarM5'
     
     # run specific model path
-    MODEL_PATH = adjustModelPath('/home/user/notebooks/data/model/ccarM3/', False);
+    MODEL_PATH = adjustModelPath(
+        '/home/user/notebooks/data/model/ccarM5/', 
+        restart=False
+    )
     print('Model will be saved in: '+MODEL_PATH)
-    MODEL_SAVED = MODEL_PATH + '/ccarM3.pth'
+    MODEL_SAVED = MODEL_PATH + '/ccarM5.pth'
 
     DEBUG = False
 
@@ -357,9 +358,9 @@ if __name__ == "__main__":
     NUM_EPOCHS = 250
     
     t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx = load_data(TRAIN_PATH, 
-        verbose=True, oneChunkOnly=False)
+        verbose=True, oneChunkOnly=True)
     v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx = load_data(VALID_PATH, 
-        verbose=True, oneChunkOnly=False)
+        verbose=True, oneChunkOnly=True)
 
     train_ds = FNMCCARDataset(t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx, 12, 1)
     valid_ds = FNMCCARDataset(v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx, 12, 1)
@@ -417,7 +418,12 @@ if __name__ == "__main__":
     }
 
     model = makeModel(model_params)
-    loss_function = nn.CrossEntropyLoss(reduction='sum',  ignore_index=8) # 8 is EOS
+    loss_function = nn.CrossEntropyLoss(
+        weight=torch.Tensor([9.72878714e-01, 9.06249865e-03, 2.04512980e-03, 
+                             9.42417745e-04, 6.06711347e-04, 4.44252668e-04, 
+                             3.18424257e-04, 1.22132591e-03, 1.24805256e-02]).to(torch.device("cuda")),
+        reduction='sum',  
+        ignore_index=8) # 8 is EOS
     optimizer = optim.Adam(params=model.parameters())
 
     fitCtx = TrainingContext(
@@ -440,16 +446,25 @@ if __name__ == "__main__":
 
     #writer = SummaryWriter(SUMMARY_PATH, comment='fixed_seq_ind_2')
 
+    def lprint(x):
+        return "|".join(map(lambda x: "{:.2f}".format(x), x))
+
     try:
         with tqdm.trange(checkpoint_epoch, checkpoint_epoch + NUM_EPOCHS) as t:
             for epoch in t:
                 t.set_description('Epoch: %i' % epoch)
                 train_loss = fitCtx.trainLoop(epoch)
+
+                t.set_postfix(
+                    TL = "{:.2f}".format(train_loss), 
+                    VL = lprint(fitCtx.valid_losses[-10:])
+                )
+
                 valid_loss = fitCtx.validLoop(epoch)
 
                 t.set_postfix(
-                    trainLoss = "{:.4f}".format(train_loss),
-                    validLoss = "{:.4f}".format(valid_loss)
+                    TL = "{:.2f}".format(train_loss), 
+                    VL = lprint(fitCtx.valid_losses[-10:])
                 )
 
                 fitCtx.saveModel(epoch)

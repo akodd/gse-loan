@@ -25,9 +25,9 @@ class LinearBlock(nn.Module):
         prev_s = input_size
         for i, (s, r) in enumerate(linear_conf):
             dc['linear'+str(i+1)]=nn.Linear(prev_s, s)
-            dc['relu'+str(i+1)] = nn.ReLU(inplace=True)
-            dc['batchn'+str(i+1)] = nn.BatchNorm1d(s)
-            dc['drpout'+str(i+1)] = nn.Dropout(r)
+            dc['relu'+str(i+1)] = nn.SELU(inplace=True)
+            #dc['batchn'+str(i+1)] = nn.BatchNorm1d(s)
+            #dc['drpout'+str(i+1)] = nn.Dropout(r)
             prev_s = s
         self.linblock = nn.Sequential(dc)
 
@@ -75,7 +75,7 @@ class MacroMortEcoder(nn.Module):
         ea = [x(acq[:,i]) for i, (a, x) in enumerate(self.emb_acq.items())]
         ea = torch.cat(ea,  1)
         ea = ea.reshape(seq.shape[0], -1, ea.shape[1])\
-            .expand(-1, seq.shape[1], -1)
+            .expand(-1, seq.shape[1], -1)   
 
         ey = [x(ymd[:,:,i]) for i, (a, x) in enumerate(self.emb_seq.items())]
         ey = torch.cat(ey,  2)
@@ -112,37 +112,42 @@ class MacroMortDecoder(nn.Module):
             hidden_size = lstm_conf['lstm_size'],
             num_layers  = lstm_conf['lstm_layers'],
             dropout     = lstm_conf['lstm_dropout'],
-            batch_first  = False,
+            batch_first  = True,
             bidirectional = False
         )
         
         #post_input_size = (1 + self.lstm.bidirectional) * \
         #    self.lstm.num_layers * self.lstm.hidden_size
-        self.post_linblock = LinearBlock(self.lstm.hidden_size, post_lin_conf)
+        self.post_linblock = LinearBlock(self.lstm.hidden_size+9, post_lin_conf)
 
     def forward(self, zim, dlq, macro):
         self.lstm.flatten_parameters()
         zim = self.pre_linblock(zim)
 
         out = []
-        for t in range(12):
-            decinp = torch.cat([zim, dlq, macro[:, t, :]], 1)
-            decinp = decinp.unsqueeze(0) # sequence length is 1
-            _, (hx, _) = self.lstm(decinp)
 
-            dlq_dist = hx[-1, :, :]
-            dlq_dist = self.post_linblock(dlq_dist)
+        scen = torch.cat([
+            dlq.unsqueeze(1).expand(-1, 12, -1), 
+            zim.unsqueeze(1).expand(-1, 12, -1), 
+            macro], 2)
+        lstm_out, _ = self.lstm(scen)
+        
+        for t in range(12):
+            dlq_input = torch.cat([dlq, lstm_out[:, t, :]], 1)
+            dlq_dist = self.post_linblock(dlq_input)
+
             out.append(dlq_dist)
-            # batch, 9
+
             _, idx = F.softmax(dlq_dist, 1).max(1)
             dlq = torch.zeros_like(dlq)
             dlq[torch.arange(dlq.shape[0]), idx]=1
+
 
         dlq_seq = torch.stack(out, 2) # (batch, 9[0,...,7,EOS], 12)
 
         return dlq_seq
 
-class CCARM3Model(nn.Module):
+class CCARM6Model(nn.Module):
     r"""
      Fill up
     """
@@ -158,7 +163,7 @@ class CCARM3Model(nn.Module):
                 tuple if the embedding size
             embed_drp: drop out percentage after embedding layer
         """
-        super(CCARM3Model, self).__init__()
+        super(CCARM6Model, self).__init__()
         self.encoder = macroMortEcoder
         self.decoder = macroMortDecoder    
 
@@ -180,19 +185,27 @@ class Losses:
         self.valid_losses = []
         self.test_losses  = []
 
-    def addValidLoss(self, item):
-        self.valid_losses.append(item)
-        
+    def addValidLoss(self, x):
+        self.valid_losses.append(x)
+        m = np.mean(self.valid_losses[-self.patience:])
+        return x > m
+
+    def addTrainLoss(self, x):
+        self.train_losses.append(x)
+
+class BoardWriter:
+    def __init__(self, name):
+         self.writer = SummaryWriter
 
 
 class TrainingContext:
-    def __init__(self, model_path, model, loss_function, optimizer, 
+    def __init__(self, model_path, model, loss_function, 
                 trainDL, validDL, SAVE_EVERY,
                 PRINT_EVERY):
         self.model_path = model_path
         self.model = model
         self.loss_function = loss_function
-        self.optimizer = optimizer
+        self.optimizer = optim.Adam(self.model.parameters())
 
         self.trainDL = trainDL
         self.validDL = validDL
@@ -229,7 +242,7 @@ class TrainingContext:
 
             if bidx % self.PRINT_EVERY  == 0:
                 mean_loss = np.mean(losses)/self.trainDL.batch_size
-                tq.set_postfix(trainLoss = "{:.4f}".format(mean_loss))
+                tq.set_postfix(trainLoss = "{:.8f}".format(mean_loss))
                 #writer.add_scalar('loss/training', mean_loss, epoch*bidx)
 
         mean_loss = np.mean(losses)/self.trainDL.batch_size
@@ -255,7 +268,7 @@ class TrainingContext:
 
                 if bidx % self.PRINT_EVERY  == 0:
                     mean_loss = np.mean(losses)/self.validDL.batch_size
-                    tq.set_postfix(validLoss = "{:.4f}".format(mean_loss))
+                    tq.set_postfix(validLoss = "{:.8f}".format(mean_loss))
                     #writer.add_scalar('loss/validation', mean_loss, epoch*bidx)
 
         mean_loss = np.mean(losses)/self.validDL.batch_size
@@ -288,13 +301,13 @@ class TrainingContext:
         return checkpoint_epoch
 
     def saveModel(self, epoch):
-        torch.save({ \
+        torch.save({ 
             'epoch': epoch,
-            'model_state_dict': self.model.module.state_dict(), \
-            'optimizer_state_dict': self.optimizer.state_dict(), \
-            'train_losses' : self.train_losses, \
-            'valid_losses' : self.valid_losses \
-            }, self.model_path \
+            'model_state_dict': self.model.module.state_dict(), 
+            'optimizer_state_dict': self.optimizer.state_dict(), 
+            'train_losses' : self.train_losses, 
+            'valid_losses' : self.valid_losses 
+            }, self.model_path 
         ) 
 
     def makeParallel(self, use=False):
@@ -318,7 +331,7 @@ def makeModel(model_params):
         post_lin_conf = model_params['decoder']['post_lin_conf'],
     )
 
-    model = CCARM3Model(encoder, decoder)
+    model = CCARM6Model(encoder, decoder)
     return model
 
 def adjustModelPath(model_path, restart=True):
@@ -334,12 +347,15 @@ def adjustModelPath(model_path, restart=True):
 if __name__ == "__main__":
     TRAIN_PATH = '/home/user/notebooks/data/train'
     VALID_PATH = '/home/user/notebooks/data/valid'
-    SUMMARY_PATH = '/home/user/notebooks/runs/ccarM3'
+    SUMMARY_PATH = '/home/user/notebooks/runs/ccarM6'
     
     # run specific model path
-    MODEL_PATH = adjustModelPath('/home/user/notebooks/data/model/ccarM3/', False);
+    MODEL_PATH = adjustModelPath(
+        '/home/user/notebooks/data/model/ccarM6/',
+        restart=False
+    )
     print('Model will be saved in: '+MODEL_PATH)
-    MODEL_SAVED = MODEL_PATH + '/ccarM3.pth'
+    MODEL_SAVED = MODEL_PATH + '/ccarM6.pth'
 
     DEBUG = False
 
@@ -349,20 +365,20 @@ if __name__ == "__main__":
         PRINT_EVERY=10
         SAVE_EVERY=1000
     else:
-        BATCH_SIZE = 512 
+        BATCH_SIZE = 64 
         NUM_WORKERS = 6
-        PRINT_EVERY=100
+        PRINT_EVERY=25
         SAVE_EVERY=1000
 
     NUM_EPOCHS = 250
     
     t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx = load_data(TRAIN_PATH, 
-        verbose=True, oneChunkOnly=False)
+        verbose=True, oneChunkOnly=True)
     v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx = load_data(VALID_PATH, 
-        verbose=True, oneChunkOnly=False)
+        verbose=True, oneChunkOnly=True)
 
-    train_ds = FNMCCARDataset(t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx, 12, 1)
-    valid_ds = FNMCCARDataset(v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx, 12, 1)
+    train_ds = FNMCCARDataset(t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx, 12, 4)
+    valid_ds = FNMCCARDataset(v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx, 12, 4)
 
     print("Number of train acq: {:,}".format(len(train_ds)))
     print("Number of valid acq: {:,}".format(len(valid_ds)))
@@ -375,56 +391,62 @@ if __name__ == "__main__":
     model_params = {
         'seq_n_features': FNMCCARDataset.seq_n_features,
         'encoder' : {
-            'emb_acq_dims' : [('state_id',   55, 25), 
-                            ('purpose_id', 5, 2),
-                            ('mi_type_id', 4, 2),
-                            ('occupancy_status_id', 4, 2), 
-                            ('product_type_id', 2, 2), 
-                            ('property_type_id', 6, 2), 
-                            ('seller_id', 95, 40), 
-                            ('zip3_id', 1001, 50)],
-            'emb_seq_dims' : [('yyyymm', 219, 50), 
-                            ('msa_id', 407, 50), 
-                            ('servicer_id', 46, 23)],
+            'emb_acq_dims' : [
+                ('state_id',   55, 5), 
+                ('purpose_id', 5, 2),
+                ('mi_type_id', 4, 2),
+                ('occupancy_status_id', 4, 2), 
+                ('product_type_id', 2, 2), 
+                ('property_type_id', 6, 2), 
+                ('seller_id', 95, 5), 
+                ('zip3_id', 1001, 26)
+            ],
+            'emb_seq_dims' : [
+                ('yyyymm', 219, 25), 
+                ('msa_id', 407, 26), 
+                ('servicer_id', 46, 5)
+            ],
             'lstm' : {
-                'lstm_size': 400,
+                'lstm_size': 300,
                 'lstm_layers': 3,
                 'lstm_dropout': 0.2
             },
             'lin_block' : [
-                (200, 0.2),
-                (100, 0.2),
-                (50,  0.2)
+                (100, 0.2)
             ]
         },
         'decoder' : {
-            'input_size': 50,
+            'input_size': 100,
             'pre_lin_conf': [
-                (50, 0.2)
+                (75, 0.2)
             ],
             'lstm' : {
-                'input_size' : 73, # 50 + 9 + macros
-                'lstm_size': 100,
+                'input_size' : 98, # 50 + 9 + macros
+                'lstm_size': 300,
                 'lstm_layers': 3,
                 'lstm_dropout': 0.2
             },
             'post_lin_conf' : [
-                (75, 0.1),
-                (50, 0.1),
-                (9, 0.1) # DLQ is from 0 to 8
+                (200, 0.2),
+                (100, 0.2),
+                (50, 0.2),
+                (9, 0.2) # DLQ is from 0 to 8
             ]
         }
     }
 
     model = makeModel(model_params)
-    loss_function = nn.CrossEntropyLoss(reduction='sum',  ignore_index=8) # 8 is EOS
-    optimizer = optim.Adam(params=model.parameters())
+    loss_function = nn.CrossEntropyLoss(
+        #weight=torch.Tensor([0.2479, 0.0945, 0.0939, 
+        #                     0.0938, 0.0938, 0.0937, 
+        #                     0.0937, 0.0938, 0.0949]).to(torch.device("cuda")),
+        reduction='sum') # 8 is EOS
+    
 
     fitCtx = TrainingContext(
         MODEL_SAVED, 
         model, 
-        loss_function, 
-        optimizer, 
+        loss_function,
         trainDL, 
         validDL,
         SAVE_EVERY,
@@ -440,19 +462,36 @@ if __name__ == "__main__":
 
     #writer = SummaryWriter(SUMMARY_PATH, comment='fixed_seq_ind_2')
 
+    def lprint(x):
+        return "|".join(map(lambda x: "{:.1E}".format(x), x))
+
     try:
         with tqdm.trange(checkpoint_epoch, checkpoint_epoch + NUM_EPOCHS) as t:
             for epoch in t:
                 t.set_description('Epoch: %i' % epoch)
                 train_loss = fitCtx.trainLoop(epoch)
+
+                t.set_postfix(
+                    TL = "{:.4f}".format(train_loss), 
+                    VL = lprint(fitCtx.valid_losses[-10:])
+                )
+
                 valid_loss = fitCtx.validLoop(epoch)
 
                 t.set_postfix(
-                    trainLoss = "{:.4f}".format(train_loss),
-                    validLoss = "{:.4f}".format(valid_loss)
+                    TL = "{:.4f}".format(train_loss),
+                    MVL = "{:.4f}".format(np.mean(fitCtx.valid_losses[-10:])),
+                    VL = lprint(fitCtx.valid_losses[-10:])
                 )
 
+                if len(fitCtx.valid_losses) > 10 \
+                    and valid_loss > np.mean(fitCtx.valid_losses[-10:]):
+                    print('Validation loss is increasing quit before saving')
+                    break
+
                 fitCtx.saveModel(epoch)
+
+
 
     except KeyboardInterrupt:
         print ('Saving the model state before exiting')

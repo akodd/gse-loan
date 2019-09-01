@@ -118,7 +118,7 @@ class MacroMortDecoder(nn.Module):
         
         #post_input_size = (1 + self.lstm.bidirectional) * \
         #    self.lstm.num_layers * self.lstm.hidden_size
-        self.post_linblock = LinearBlock(self.lstm.hidden_size, post_lin_conf)
+        self.post_linblock = LinearBlock(self.lstm.hidden_size+9, post_lin_conf)
 
     def forward(self, zim, dlq, macro):
         self.lstm.flatten_parameters()
@@ -130,8 +130,9 @@ class MacroMortDecoder(nn.Module):
             decinp = decinp.unsqueeze(0) # sequence length is 1
             _, (hx, _) = self.lstm(decinp)
 
-            dlq_dist = hx[-1, :, :]
-            dlq_dist = self.post_linblock(dlq_dist)
+            lstm_out = hx[-1, :, :]
+            lstm_out = torch.cat([dlq, lstm_out], 1)
+            dlq_dist = self.post_linblock(lstm_out)
             out.append(dlq_dist)
             # batch, 9
             _, idx = F.softmax(dlq_dist, 1).max(1)
@@ -142,7 +143,7 @@ class MacroMortDecoder(nn.Module):
 
         return dlq_seq
 
-class CCARM3Model(nn.Module):
+class CCARM4Model(nn.Module):
     r"""
      Fill up
     """
@@ -158,7 +159,7 @@ class CCARM3Model(nn.Module):
                 tuple if the embedding size
             embed_drp: drop out percentage after embedding layer
         """
-        super(CCARM3Model, self).__init__()
+        super(CCARM4Model, self).__init__()
         self.encoder = macroMortEcoder
         self.decoder = macroMortDecoder    
 
@@ -318,7 +319,7 @@ def makeModel(model_params):
         post_lin_conf = model_params['decoder']['post_lin_conf'],
     )
 
-    model = CCARM3Model(encoder, decoder)
+    model = CCARM4Model(encoder, decoder)
     return model
 
 def adjustModelPath(model_path, restart=True):
@@ -337,7 +338,10 @@ if __name__ == "__main__":
     SUMMARY_PATH = '/home/user/notebooks/runs/ccarM3'
     
     # run specific model path
-    MODEL_PATH = adjustModelPath('/home/user/notebooks/data/model/ccarM3/', False);
+    MODEL_PATH = adjustModelPath(
+        '/home/user/notebooks/data/model/ccarM3/', 
+        restart=False
+    )
     print('Model will be saved in: '+MODEL_PATH)
     MODEL_SAVED = MODEL_PATH + '/ccarM3.pth'
 
@@ -357,9 +361,9 @@ if __name__ == "__main__":
     NUM_EPOCHS = 250
     
     t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx = load_data(TRAIN_PATH, 
-        verbose=True, oneChunkOnly=False)
+        verbose=True, oneChunkOnly=True)
     v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx = load_data(VALID_PATH, 
-        verbose=True, oneChunkOnly=False)
+        verbose=True, oneChunkOnly=True)
 
     train_ds = FNMCCARDataset(t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx, 12, 1)
     valid_ds = FNMCCARDataset(v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx, 12, 1)
@@ -440,16 +444,25 @@ if __name__ == "__main__":
 
     #writer = SummaryWriter(SUMMARY_PATH, comment='fixed_seq_ind_2')
 
+    def lprint(x):
+        return "|".join(map(lambda x: "{:.2f}".format(x), x))
+
     try:
         with tqdm.trange(checkpoint_epoch, checkpoint_epoch + NUM_EPOCHS) as t:
             for epoch in t:
                 t.set_description('Epoch: %i' % epoch)
                 train_loss = fitCtx.trainLoop(epoch)
+
+                t.set_postfix(
+                    TL = "{:.2f}".format(train_loss), 
+                    VL = lprint(fitCtx.valid_losses[-10:])
+                )
+
                 valid_loss = fitCtx.validLoop(epoch)
 
                 t.set_postfix(
-                    trainLoss = "{:.4f}".format(train_loss),
-                    validLoss = "{:.4f}".format(valid_loss)
+                    TL = "{:.2f}".format(train_loss), 
+                    VL = lprint(fitCtx.valid_losses[-10:])
                 )
 
                 fitCtx.saveModel(epoch)
