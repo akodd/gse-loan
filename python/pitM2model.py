@@ -15,7 +15,7 @@ import time
 import datetime
 from pytz import timezone
 
-from fnm_macros_dset import FNMMacrosDataset, paddingCollator, load_data
+from fnm_macros_dlq_eos_dset import FNMMacrosDLQEOSDataset, paddingCollator, load_data
 
 class PitM2Model(nn.Module):
     r"""
@@ -57,32 +57,21 @@ class PitM2Model(nn.Module):
             bidirectional = True
         )
 
-        lin1_size = 1 * lstm_size
-        lin2_size = 2 * lin1_size
-        lin3_size = 1 * lstm_size
-
         if latten_size is None:
             latten_size = lstm_size
         self.latent_lin = nn.Linear(lstm_size, 2*latten_size) # m and s
 
+        self.lstm_dec_cell = nn.LSTMCell(
+            input_size=latten_size, 
+            hidden_size=100
+        )
 
-        self.linear1 = nn.Linear(latten_size, lin1_size)
-        self.bn1 = nn.BatchNorm1d(lin1_size)
+        # output is 9 for 0,...,7,8 DLQ
+        self.gen_dlq_dist1 = nn.Linear(self.lstm_dec_cell.hidden_size, 25)
+        self.bn1 = nn.BatchNorm1d(25)
         self.dpout1 = nn.Dropout(0.4)
 
-        self.linear2 = nn.Linear(lin1_size, lin2_size)
-        self.bn2 = nn.BatchNorm1d(lin2_size)
-        self.dpout2 = nn.Dropout(0.4)
-
-        self.linear3 = nn.Linear(lin2_size, lin3_size)
-        self.bn3 = nn.BatchNorm1d(lin3_size)
-        self.dpout3 = nn.Dropout(0.4)        
-        
-        self.linear4 = nn.Linear(lin3_size, 19*12)
-        #self.bn4 = nn.BatchNorm1d(19*12)
-        #self.dpout1 = nn.Dropout(0.1)
-
-        #self.logsoftmax = nn.LogSoftmax(dim=1)
+        self.gen_dlq_dist2 = nn.Linear(25, 9)
 
     def forward(self, seq, seq_len, ymd, acq):
         # embed acq
@@ -117,29 +106,28 @@ class PitM2Model(nn.Module):
         lat = self.latent_lin(lat)
 
         # split ht into mean and sd parts
-        m = lat[:,                     :int(lat.size()[1]/2)]
-        s = lat[:, int(lat.size()[1]/2):]
+        m = lat[:,                     :int(lat.shape[1]/2)]
+        s = lat[:, int(lat.shape[1]/2):]
         # sample
-        z = torch.randn(m.size(), device=m.device)
+        z = torch.randn(m.shape, device=m.device)
         z = m + torch.sqrt(torch.exp(s))*z
 
-        
-        # we are predicting 19 DLQ x 12 months
-        
-        out = self.bn1(functional.relu(self.linear1(z)))
-        out = self.dpout1(out)
+        # we are predicting sequences for 12 months into the future
 
-        out = self.bn2(functional.relu(self.linear2(out)))
-        out = self.dpout2(out)
+        hx = torch.zeros([z.shape[0], self.lstm_dec_cell.hidden_size], device=z.device)
+        cx = torch.zeros_like(hx)
+        #dec_input = z # initial hidden state from sample
+        out = []
+        for t in range(12):
+            hx, cx = self.lstm_dec_cell(z, (hx, cx))
+            dlq_dist = self.bn1(functional.relu(self.gen_dlq_dist1(hx)))
+            dlq_dist = self.dpout1(dlq_dist)
+            dlq_dist = self.gen_dlq_dist2(dlq_dist)
+            out.append(dlq_dist)
 
-        out = self.bn3(functional.relu(self.linear3(out)))
-        out = self.dpout3(out)
+        dlq_seq = torch.stack(out, 2) # (batch, 9[0,0...,7,EOS], 12)
 
-        out = self.linear4(out)
-
-        out = out.reshape(-1, 19, 12) 
-        #out = self.logsoftmax(out)
-        return out
+        return dlq_seq
 
 # def makeEmeddings(acq, embeding_dim=2):
 #     # add 1 since NULLs are extracted as 0
@@ -191,7 +179,7 @@ class TrainingContext:
 
             if bidx % self.LOSS_EVERY_N_BATCHES  == 0:
                 mean_loss = np.mean(losses)/self.trainDL.batch_size
-                tq.set_postfix(trainLoss = "{:.12f}".format(mean_loss))
+                tq.set_postfix(trainLoss = "{:.4f}".format(mean_loss))
                 #writer.add_scalar('loss/training', mean_loss, epoch*bidx)
 
         mean_loss = np.mean(losses)/self.trainDL.batch_size
@@ -217,7 +205,7 @@ class TrainingContext:
 
                 if bidx % self.LOSS_EVERY_N_BATCHES  == 0:
                     mean_loss = np.mean(losses)/self.validDL.batch_size
-                    tq.set_postfix(validLoss = "{:.12f}".format(mean_loss))
+                    tq.set_postfix(validLoss = "{:.4f}".format(mean_loss))
                     #writer.add_scalar('loss/validation', mean_loss, epoch*bidx)
 
         mean_loss = np.mean(losses)/self.validDL.batch_size
@@ -313,8 +301,8 @@ if __name__ == "__main__":
     t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx = load_data(TRAIN_PATH, True, True)
     v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx = load_data(VALID_PATH, True, True)
 
-    train_ds = FNMMacrosDataset(t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx, 12, 15)
-    valid_ds = FNMMacrosDataset(v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx, 12, 15)
+    train_ds = FNMMacrosDLQEOSDataset(t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx, 12, 15)
+    valid_ds = FNMMacrosDLQEOSDataset(v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx, 12, 15)
 
     print("Number of train acq: {:,}".format(len(train_ds)))
     print("Number of valid acq: {:,}".format(len(valid_ds)))
@@ -325,7 +313,7 @@ if __name__ == "__main__":
         collate_fn=paddingCollator, num_workers=NUM_WORKERS, pin_memory=True)
 
     model_params = {
-        'seq_n_features': 39, # seq + macros
+        'seq_n_features': 29, # seq + macros
         'lstm_size': 600,
         'lstm_layers': 3,
         'lstm_dropout': 0.2,
@@ -343,7 +331,7 @@ if __name__ == "__main__":
     }
 
     model = makeModel(model_params)
-    loss_function = nn.CrossEntropyLoss(reduction='sum')
+    loss_function = nn.CrossEntropyLoss(reduction='sum',  ignore_index=8) # 8 is EOS
     optimizer = optim.Adam(params=model.parameters())
 
     fitCtx = TrainingContext(
@@ -374,8 +362,8 @@ if __name__ == "__main__":
                 valid_loss = fitCtx.validLoop(epoch)
 
                 t.set_postfix(
-                    trainLoss = "{:.12f}".format(train_loss),
-                    validLoss = "{:.12f}".format(valid_loss)
+                    trainLoss = "{:.4f}".format(train_loss),
+                    validLoss = "{:.4f}".format(valid_loss)
                 )
 
                 fitCtx.saveModel(epoch)

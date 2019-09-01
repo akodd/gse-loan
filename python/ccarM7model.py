@@ -26,8 +26,8 @@ class LinearBlock(nn.Module):
         for i, (s, r) in enumerate(linear_conf):
             dc['linear'+str(i+1)]=nn.Linear(prev_s, s)
             dc['relu'+str(i+1)] = nn.SELU(inplace=True)
-            #dc['batchn'+str(i+1)] = nn.BatchNorm1d(s)
-            dc['drpout'+str(i+1)] = nn.Dropout(r)
+            dc['batchn'+str(i+1)] = nn.BatchNorm1d(s)
+            #dc['drpout'+str(i+1)] = nn.Dropout(r)
             prev_s = s
         self.linblock = nn.Sequential(dc)
 
@@ -366,12 +366,12 @@ if __name__ == "__main__":
     NUM_EPOCHS = 250
     
     t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx = load_data(TRAIN_PATH, 
-        verbose=True, oneChunkOnly=True)
+        verbose=True, oneChunkOnly=False)
     v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx = load_data(VALID_PATH, 
-        verbose=True, oneChunkOnly=True)
+        verbose=True, oneChunkOnly=False)
 
-    train_ds = FNMCCARDataset(t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx, 12, 3)
-    valid_ds = FNMCCARDataset(v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx, 12, 3)
+    train_ds = FNMCCARDataset(t_acq, t_idx_to_seq, t_seq, t_macros, t_ym2idx, 12, 10)
+    valid_ds = FNMCCARDataset(v_acq, v_idx_to_seq, v_seq, v_macros, v_ym2idx, 12, 10)
 
     print("Number of train acq: {:,}".format(len(train_ds)))
     print("Number of valid acq: {:,}".format(len(valid_ds)))
