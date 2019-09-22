@@ -3,6 +3,8 @@ import torch as torch
 import torch.nn as nn
 import collections
 
+from torch.nn.utils.rnn import pack_padded_sequence
+
 class LinearBlock(nn.Module):
     def __init__(self, input_size, linear_conf):
         super(LinearBlock, self).__init__()
@@ -18,6 +20,9 @@ class LinearBlock(nn.Module):
 
     def forward(self, x):
         return self.linblock(x)
+
+    def out_features(self):
+        return self.linblock[-4].out_features
 
 class LSTMEmbeddingEncoder(nn.Module):
     def __init__(self, seq_n_features, lstm_conf, emb_acq_dims, emb_seq_dims):

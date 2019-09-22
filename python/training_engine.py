@@ -16,12 +16,6 @@ import datetime
 from pytz import timezone
 class TrainingContext:
     def __init__(self, PRINT_EVERY=25):
-        self.model = None
-        self.loss_function = None
-        self.optimizer = None
-        self.trainDL = None
-        self.validDL = None
-
         self.train_losses = []
         self.valid_losses = []
         self.checkpoint_epoch = 0
@@ -94,43 +88,65 @@ class TrainingContext:
     def dataLoaderValid(self):
         raise RuntimeError('not implemented')
 
-    def useGPU(self, use=False):
+    def loadModel(self, model_path):
+        raise RuntimeError('not implemented')
+ 
+    def saveModel(self, model_path, epoch):
+        raise RuntimeError('not implemented')
+
+
+    def useGPU(self, use=False, verbose=True):
         if use:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device("cpu")
 
-        print('Using device: {}'.format(self.device.type))
+        if (verbose):
+            print('Using device: {}'.format(self.device.type))
         self.model.to(self.device)
+        self.loss_function.to(self.device)
 
-
-    # def loadModel(self):
-    #     if os.path.exists(self.model_path):
-    #         print('Loading model checkpoint: {}'.format(self.model_path))
-    #         checkpoint = torch.load(self.model_path)
-    #         self.model.load_state_dict(checkpoint['model_state_dict'])
-    #         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    #         self.train_losses = checkpoint['train_losses']
-    #         self.valid_losses = checkpoint['valid_losses']
-    #         self.checkpoint_epoch = checkpoint['epoch']
-    #     else:
-    #         self.checkpoint_epoch = 0
-# 
-    # def saveModel(self, epoch):
-    #     torch.save({ 
-    #         'epoch': epoch,
-    #         'model_state_dict': self.model.module.state_dict(), 
-    #         'model_config' : self.model.module.model_config,
-    #         'optimizer_state_dict': self.optimizer.state_dict(), 
-    #         'train_losses' : self.train_losses, 
-    #         'valid_losses' : self.valid_losses 
-    #         }, self.model_path 
-    #     ) 
-
-    def makeParallel(self, use=False):
+    def makeParallel(self, use=False, verbose=True):
         if use and torch.cuda.device_count() > 1:
-            print("Training on", torch.cuda.device_count(), "GPUs")
+            if verbose:
+                print("Training on", torch.cuda.device_count(), "GPUs")
             self.model = nn.DataParallel(self.model)
+
+    def fit(self, NUM_EPOCHS, save_model=False):
+        def lprint(x):
+            return "|".join(map(lambda x: "{:.4f}".format(x), x))
+
+        ch = self.checkpoint_epoch
+        try:
+            with tqdm.trange(ch, ch + NUM_EPOCHS) as t:
+                for epoch in t:
+                    t.set_description('Epoch: %i' % epoch)
+                    train_loss = self.trainLoop(epoch)
+                    valid_loss = self.validLoop(epoch)
+
+                    t.set_postfix(
+                        TL = "{:.4f}".format(train_loss),
+                        MVL = "{:.4f}".format(np.mean(self.valid_losses[-10:])),
+                        VL = lprint(self.valid_losses[-4:])
+                    )
+
+                    if len(self.valid_losses) > 10 \
+                        and valid_loss > np.mean(self.valid_losses[-10:]):
+                        print('Validation loss is increasing quit before saving')
+                        break
+
+                    if save_model:
+                        self.saveModel(epoch, "")
+        except KeyboardInterrupt:
+            if save_model:
+                print ('Saving the model state before exiting')
+                self.saveModel(epoch, "")
+            t.close()
+        t.close()
+
+        return self.valid_losses[-1]
+
+
 
 
 def adjustModelPath(model_path, restart=True):

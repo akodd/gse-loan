@@ -41,29 +41,54 @@ class OTCS12Module(nn.Module):
         self.encoder = LSTMEmbeddingEncoder(
             seq_n_features = module_config['seq_n_features'],
             lstm_conf = module_config['encoder']['lstm'],
-            emb_acq_dims = module_config['encoder']['emb_acq_dims'],
-            emb_seq_dims = module_config['encoder']['emb_seq_dims']
+            emb_acq_dims = arangeACQEmbeddings(
+                module_config['encoder']['emb_acq_dims']
+            ),
+            emb_seq_dims = arangeSEQEmbeddings(
+                module_config['encoder']['emb_seq_dims']
+            )
         )
         self.linear = LinearBlock(
             input_size = self.dlq_dim + module_config['encoder']['lstm']['lstm_size'],
             linear_conf = module_config['pipe']
         )
         
+        self.output = nn.Linear(self.linear.out_features(), self.dlq_dim * 12)
 
-    def forward(self, X):
-        (seq, seq_len, ymd, acq) = X
-        enc_out = self.encoder(seq, seq_len, ymd, acq)
+    def forward(self, seq, seq_len, ymd, acq):
+        out = self.encoder(seq, seq_len, ymd, acq)
         dlq = lastDLQ(seq, seq_len, self.dlq_dim)
-        lin_in = torch.cat(dlq.unsqueeze(1), enc_out, 1)
-        out = self.linear(lin_in)
+        out = torch.cat([dlq, out], 1)
+        out = self.linear(out)
+        out = self.output(out)
+        out = out.reshape(-1, self.dlq_dim, 12)
         return out
+
+def arangeACQEmbeddings(emb_acq_dims):
+    emb_acq_dict = collections.OrderedDict()
+    emb_acq_dict['state_id']            = emb_acq_dims['state_id']
+    emb_acq_dict['purpose_id']          = emb_acq_dims['purpose_id']
+    emb_acq_dict['mi_type_id']          = emb_acq_dims['mi_type_id']
+    emb_acq_dict['occupancy_status_id'] = emb_acq_dims['occupancy_status_id']
+    emb_acq_dict['product_type_id']     = emb_acq_dims['product_type_id']
+    emb_acq_dict['property_type_id']    = emb_acq_dims['property_type_id']
+    emb_acq_dict['seller_id']           = emb_acq_dims['seller_id']
+    emb_acq_dict['zip3_id']             = emb_acq_dims['zip3_id']
+    return emb_acq_dict
+
+def arangeSEQEmbeddings(emb_seq_dims):
+    emb_seq_dict = collections.OrderedDict()
+    emb_seq_dict['yyyymm']      = emb_seq_dims['yyyymm']
+    emb_seq_dict['msa_id']      = emb_seq_dims['msa_id']
+    emb_seq_dict['servicer_id'] = emb_seq_dims['servicer_id']
+    return emb_seq_dict
 
 class OTCS12Model(TrainingContext):
     def __init__(self, module_config):
         super(OTCS12Model, self).__init__()
         self.module_config = module_config['module_config']
-        self.model = OTCS12Module(9, self.module_config)
-        self.optiminer = self.selectOptimizer(self.module_config)
+        self.model = OTCS12Module(19, self.module_config)
+        self.optimizer = self.selectOptimizer(self.module_config)
         self.loss_function = nn.CrossEntropyLoss(reduction='sum')
 
     def selectOptimizer(self, module_config):
@@ -72,6 +97,10 @@ class OTCS12Model(TrainingContext):
 
     def applyModel(self, batch):
         (seq, seq_len, ymd, acq, target) = batch
+        seq = seq.to(self.device)
+        seq_len = seq_len.to(self.device)
+        ymd = ymd.to(self.device)
+        acq = acq.to(self.device)
         target_hat = self.model(seq, seq_len, ymd, acq)
         target = target.to(target_hat.device)
         loss = self.loss_function(target_hat, target)
@@ -97,74 +126,111 @@ class OTCS12Model(TrainingContext):
             pin_memory=True
         )
 
-    def fit(self, NUM_EPOCHS, save_model=False):
-        def lprint(x):
-            return "|".join(map(lambda x: "{:.4f}".format(x), x))
+    def loadModel(self, model_path):
+        if os.path.exists(model_path):
+            print('Loading model checkpoint: {}'.format(model_path))
+            checkpoint = torch.load(model_path)
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.train_losses = checkpoint['train_losses']
+            self.valid_losses = checkpoint['valid_losses']
+            self.checkpoint_epoch = checkpoint['epoch']
+        else:
+            self.checkpoint_epoch = 0
+ 
+    def saveModel(self, model_path, epoch):
+        if type(model.model) == nn.DataParallel:
+            model_state_dict = self.model.module.state_dict()
+        else:
+            model_state_dict = self.model.state_dict()
+        torch.save({ 
+            'epoch': epoch,
+            'model_state_dict': model_state_dict, 
+            'model_config' : self.module_config,
+            'optimizer_state_dict': self.optimizer.state_dict(), 
+            'train_losses' : self.train_losses, 
+            'valid_losses' : self.valid_losses 
+            }, model_path 
+        ) 
 
-        ch = self.checkpoint_epoch
-        try:
-            with tqdm.trange(ch, ch + NUM_EPOCHS) as t:
-                for epoch in t:
-                    t.set_description('Epoch: %i' % epoch)
-                    train_loss = self.trainLoop(epoch)
-                    valid_loss = self.validLoop(epoch)
-
-                    t.set_postfix(
-                        TL = "{:.4f}".format(train_loss),
-                        MVL = "{:.4f}".format(np.mean(self.valid_losses[-10:])),
-                        VL = lprint(self.valid_losses[-4:])
-                    )
-
-                    if len(self.valid_losses) > 10 \
-                        and valid_loss > np.mean(self.valid_losses[-10:]):
-                        print('Validation loss is increasing quit before saving')
-                        break
-
-                    if save_model:
-                        self.saveModel(epoch)
-        except KeyboardInterrupt:
-            if save_model:
-                print ('Saving the model state before exiting')
-                self.saveModel(epoch)
-
-        return self.valid_losses[-1]
+def loadDataset(PATH, dlq_dim = 19, oneChunkOnly=True, ratio=0):
+    acq, idx_to_seq, seq, _, ym2idx = load_data(
+        PATH, 
+        verbose=True, 
+        oneChunkOnly=oneChunkOnly)
+    return FNMDatasetS12 (acq, idx_to_seq, seq, ym2idx, dlq_dim, ratio)
 
 
 if __name__ == "__main__":
     module_config = {
         'module_config' : {
-            'seq_n_features' : 32,
+            'seq_n_features' : 25,
             'batch_size' : 512,
             'adam' : {
-                        'lr' : 0.01
+                'lr' : 0.010060695099805887
             },
             'encoder': {
                 'emb_acq_dims': {
-                    'state_id': (55, 20),
+                    'state_id': (55, 11),
                     'purpose_id': (5, 2),
                     'mi_type_id': (4, 2),
                     'occupancy_status_id': (4, 2), 
                     'product_type_id': (2, 2), 
                     'property_type_id': (6, 2), 
-                    'seller_id': (95, 3 + 10), 
-                    'zip3_id': (1001, 3 + 20)
+                    'seller_id': (95, 24), 
+                    'zip3_id': (1001, 45)
                 },
                 'emb_seq_dims': {
-                    'yyyymm' : (219, 3 + 11),
-                    'msa_id' : (407, 3 + 11),
-                    'servicer_id' : (46, 3 + 3)
+                    'yyyymm' : (219, 11),
+                    'msa_id' : (407, 42),
+                    'servicer_id' : (46, 6)
                 },
                 'lstm' : {
-                    'lstm_size': (100 + 300),
-                    'lstm_layers': (2 + 2),
-                    'lstm_dropout': 0.23
+                    'lstm_size': 365,
+                    'lstm_layers': 4,
+                    'lstm_dropout': 0.8568056255089875
                 }
             },
             'pipe' : {
-                'l1' : (50 + 50, 0.3),
-                'l2' : (50 + 40, 0.4)
+                'l1' : (390, 0.1850432102477586),
+                'l2' : (74, 0.11613060292987498)
             }
         }
     }
 
     model = OTCS12Model(module_config)
+
+    TRAIN_PATH = '/home/user/notebooks/data/train'
+    VALID_PATH = '/home/user/notebooks/data/valid'
+    train_ds = loadDataset(TRAIN_PATH, dlq_dim=19, oneChunkOnly=True, ratio=5)
+    valid_ds = loadDataset(VALID_PATH, dlq_dim=19, oneChunkOnly=True, ratio=5)
+
+    model.dataLoaderTrain(train_ds, NUM_WORKERS=6)
+    model.dataLoaderValid(valid_ds, NUM_WORKERS=6)
+    model.useGPU(True)
+    model.makeParallel(True)
+    valid_error = model.fit(NUM_EPOCHS=20, save_model=False)
+
+    print(valid_error)
+
+#/***
+#/
+#100%|█████████████████████████████████████████████████████████████████████████████████| 100/100 [1:57:30<00:00, 64.45s/it, best loss: 3.115884901417626]
+#
+#{
+#    'l1_d': 0.2988637985884944, 
+#    'l1_l': 124, 
+#    'l2_d': 0.4272170242965795, 
+#    'l2_l': 10, 
+#    'lr': 0.022183313049507714, 
+#    'lstm_dropout': 0.7553171161497654, 
+#    'lstm_layers': 2, 
+#    'lstm_size': 134, 
+#    'msa_id': 7, 
+#    'seller_id': 6, 
+#    'servicer_id': 1, 
+#    'state_id': 11, 
+#    'yyyymm': 5, 
+#    'zip3_id': 44
+#}
+#

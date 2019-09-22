@@ -28,8 +28,9 @@ class FNMDatasetS12(Dataset):
             ratio: if above zero then non defaulted are scaled as ratio of defaulted
                 else no subsampling
     """
-    def __init__(self, acq, idx_to_seq, seq, ym2idx, ratio = 0):
+    def __init__(self, acq, idx_to_seq, seq, ym2idx, dlq_dim, ratio = 0):
         self.predict_ahead = 12
+        self.dlq_dim = dlq_dim
         self.acq = acq
         self.seq = seq
         self.idx_to_seq = idx_to_seq
@@ -70,7 +71,8 @@ class FNMDatasetS12(Dataset):
         sequence = self.seq[chunk_num][idx_begin:idx_end, 1:]
 
         dlq = sequence[:, 1].astype(int)
-        dlq_one_hot = np.eye(19, dtype=np.float32)[dlq[:-self.predict_ahead]] # dlq is between 0 and 6 + 12
+        np.clip(dlq, 0, self.dlq_dim-1, out=dlq)
+        dlq_one_hot = np.eye(self.dlq_dim, dtype=np.float32)[dlq[:-self.predict_ahead]] # dlq is between 0 and 6 + 12
         
         ymb, yme = int(self.ym2idx[sequence[0, 0]]), int(self.ym2idx[sequence[-1, 0]])
         yymmsamod = np.concatenate([
@@ -118,7 +120,7 @@ if __name__ == "__main__":
     TEST_PATH  = '/home/user/notebooks/data/test'
 
     acq, idx_to_seq, seq, macro, ym2idx = load_data(TRAIN_PATH, True, True)
-    dataset = FNMDatasetS12(acq, idx_to_seq, seq, ym2idx)
+    dataset = FNMDatasetS12(acq, idx_to_seq, seq, ym2idx, dlq_dim=19)
 
 
     print('Sequencies: {:,}'.format(len(dataset)))
